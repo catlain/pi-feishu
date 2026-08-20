@@ -23,7 +23,7 @@ type CommandCtx = {
 
 export const createFeishuExtension: ExtensionFactory = (pi) => {
 	const config = getFeishuConfig(process.cwd());
-	const credentials = getCredentials();
+	const credentials = getCredentials(config);
 
 	let bridge: FeishuBridgeClient | null = null;
 	let botOpenId: string | null = null;

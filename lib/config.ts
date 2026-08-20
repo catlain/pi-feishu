@@ -9,6 +9,9 @@ export const FEISHU_CONFIG_DEFAULTS: FeishuConfig = {
 	chatId: "",
 	whitelist: [],
 	truncateThreshold: 2000,
+	/** 凭证可直接配在 settings（替代环境变量；环境变量优先） */
+	appId: "",
+	appSecret: "",
 };
 
 export function getFeishuConfig(cwd?: string): FeishuConfig {

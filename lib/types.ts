@@ -11,6 +11,9 @@ export interface FeishuConfig {
 	truncateThreshold: number;
 	/** 会话名覆盖（不配置时默认取 cwd basename） */
 	sessionName?: string;
+	/** 凭证可直接配在 feishu section（替代环境变量；环境变量优先） */
+	appId?: string;
+	appSecret?: string;
 }
 
 export interface ClaimEntry {
