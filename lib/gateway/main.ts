@@ -143,6 +143,15 @@ async function main(): Promise<void> {
 				`路由 ${action}: "${parsed.text.slice(0, 50)}"` +
 					(delay !== null ? `（事件延迟 ${(delay / 1000).toFixed(1)}s）` : "（无事件时间戳）"),
 			);
+		} else {
+			// 观测盲区修复：ignored 也留痕并区分原因，区分「没到达」vs「到达被忽略」
+			let reason = "非 @bot 消息";
+			if (parsed.parentId) reason = "引用回复锦点未命中（引用的不是 bot 会话消息，且未 @bot）";
+			else if (parsed.mentionedBot && !isWhitelisted(parsed.senderOpenId, config.whitelist))
+				reason = "@bot 但发送者不在白名单";
+			log(
+				`路由 ignored（${reason}）: "${parsed.text.slice(0, 50)}" parentId=${parsed.parentId ?? "-"}`,
+			);
 		}
 	}
 

@@ -137,7 +137,7 @@ export function gatewayRoute(
 			// 单数字旧格式双写 answerIndex（过渡期兼容，读迁移即删）
 			...( /^\d+$/.test(answerSpec) ? { answerIndex: Number(answerSpec) } : {} ),
 		});
-		deps.reply(`已转交 ${target.sessionName} 代答 ${answerSpec}`);
+		deps.reply(`已转交 ${target.sessionName} 代答 ${answerSpec}`, target.sessionId);
 		return "routed";
 	}
 
@@ -147,6 +147,6 @@ export function gatewayRoute(
 		arrivedAt: now,
 		id: `pf-${now}-${Math.random().toString(36).slice(2, 8)}`,
 	});
-	deps.reply(`已转交 ${target.sessionName}`);
+	deps.reply(`已转交 ${target.sessionName}`, target.sessionId);
 	return "routed";
 }
