@@ -73,6 +73,44 @@ describe("gatewayRoute 网关路由", () => {
 		expect(replies[0]).toContain("已转交 beta");
 	});
 
+	it("前缀匹配：裸名命中带后缀会话", () => {
+		const pending: Array<{ sessionId: string; command: string }> = [];
+		const claims: ClaimEntry[] = [
+			{ sessionId: "s1", sessionName: "catlain-6f3a", claimedAt: 1, heartbeat: Date.now() },
+		];
+		const a = gatewayRoute(
+			{
+				claims,
+				whitelist: ["ou_ok"],
+				writePending: (sid, d) => pending.push({ sessionId: sid, command: d.command }),
+				reply: () => {},
+			},
+			{ ...base, text: "catlain 跑回测" },
+		);
+		expect(a).toBe("routed");
+		expect(pending).toEqual([{ sessionId: "s1", command: "跑回测" }]);
+	});
+
+	it("前缀匹配多候选：回复候选列表不路由", () => {
+		const replies: string[] = []
+		const claims: ClaimEntry[] = [
+			{ sessionId: "s1", sessionName: "catlain-6f3a", claimedAt: 1, heartbeat: Date.now() },
+			{ sessionId: "s2", sessionName: "catlain-9b2c", claimedAt: 2, heartbeat: Date.now() },
+		];
+		const a = gatewayRoute(
+			{
+				claims,
+				whitelist: ["ou_ok"],
+				writePending: () => {},
+				reply: (t) => replies.push(t),
+			},
+			{ ...base, text: "catlain x" },
+		);
+		expect(a).toBe("not_found_reply");
+		expect(replies[0]).toContain("catlain-6f3a");
+		expect(replies[0]).toContain("catlain-9b2c");
+	});
+
 	it("目标不在线 → 网关回复在线列表", () => {
 		const replies: string[] = [];
 		const a = gatewayRoute(

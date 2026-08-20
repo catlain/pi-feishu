@@ -52,7 +52,20 @@ export function gatewayRoute(
 	const cmd = parseCommand(text);
 	if (!cmd) return "ignored";
 
-	const target = live.find((e) => e.sessionName === cmd.sessionName);
+	// 精确匹配 → 唯一前缀匹配（会话名都带随机后缀，输裸名即可命中）
+	let target = live.find((e) => e.sessionName === cmd.sessionName);
+	if (!target) {
+		const candidates = live.filter(
+			(e) => e.sessionName.startsWith(`${cmd.sessionName}-`),
+		);
+		if (candidates.length === 1) target = candidates[0];
+		else if (candidates.length > 1) {
+			deps.reply(
+				`[pi] "${cmd.sessionName}" 匹配到多个会话，请用完整名或更长前缀:\n${candidates.map((e) => `- ${e.sessionName}`).join("\n")}`,
+			);
+			return "not_found_reply";
+		}
+	}
 	if (!target) {
 		deps.reply(
 			`[pi] 会话 "${cmd.sessionName}" 不在线。当前在线:\n${live.map((e) => `- ${e.sessionName}`).join("\n") || "-（无）"}`,
