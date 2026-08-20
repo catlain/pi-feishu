@@ -10,6 +10,11 @@ import {
 	isProcessAlive,
 	initIdleState,
 	tickIdle,
+	initReconnectState,
+	tickReconnect,
+	isWsDead,
+	WS_DEAD_AFTER_MS,
+	RECONNECT_GIVEUP_MS,
 	GRACE_MS,
 	IDLE_EXIT_MS,
 } from "../lib/gateway/lifecycle";
@@ -72,5 +77,50 @@ describe("空闲自退状态机", () => {
 		expect(tickIdle(st, false, GRACE_MS + 130_000)).toBe(false); // 重新计数
 		expect(tickIdle(st, false, GRACE_MS + 130_000 + IDLE_EXIT_MS - 1)).toBe(false);
 		expect(tickIdle(st, false, GRACE_MS + 130_000 + IDLE_EXIT_MS)).toBe(true);
+	});
+});
+
+describe("WS 断线检测与重连", () => {
+	it("isWsDead 水位边界", () => {
+		expect(isWsDead(0, WS_DEAD_AFTER_MS)).toBe(false);
+		expect(isWsDead(0, WS_DEAD_AFTER_MS + 1)).toBe(true);
+	});
+
+	it("退避序列：1s→2s→4s→…封顶 60s", () => {
+		const st = initReconnectState();
+		let now = 0;
+		const delays: number[] = [];
+		for (let i = 0; i < 9; i++) {
+			const r = tickReconnect(st, false, now);
+			expect(r.action).toBe("reconnect");
+			if (r.action === "reconnect") delays.push(r.delayMs);
+			now += 61_000; // 每次都过退避窗口（但未到熔断）
+		}
+		expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
+	});
+
+	it("等待退避窗口内不重试", () => {
+		const st = initReconnectState();
+		expect(tickReconnect(st, false, 0).action).toBe("reconnect");
+		expect(tickReconnect(st, false, 500).action).toBe("none"); // 未到退避（已翻倍为 2s）
+		expect(tickReconnect(st, false, 2000).action).toBe("reconnect");
+	});
+
+	it("恢复连接后清零", () => {
+		const st = initReconnectState();
+		tickReconnect(st, false, 0);
+		tickReconnect(st, false, 5000);
+		expect(tickReconnect(st, true, 6000).action).toBe("none");
+		expect(st.failures).toBe(0);
+		expect(st.deadSince).toBeNull();
+		// 新一轮断开从 1s 退避重新开始
+		expect(tickReconnect(st, false, 7000)).toMatchObject({ action: "reconnect", delayMs: 1000 });
+	});
+
+	it("持续失败超 30 分钟熔断 giveup（边界）", () => {
+		const st = initReconnectState();
+		tickReconnect(st, false, 0); // deadSince=0 并首次重试
+		expect(tickReconnect(st, false, RECONNECT_GIVEUP_MS - 1).action).not.toBe("giveup");
+		expect(tickReconnect(st, false, RECONNECT_GIVEUP_MS).action).toBe("giveup");
 	});
 });

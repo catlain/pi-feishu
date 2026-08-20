@@ -4,6 +4,7 @@
  * 无 LLM、无会话。职责：入站解析、@bot 检测、白名单校验、
  * 会话名路由（claim 心跳判活）、list 仲裁、错误回报、pending 分发、
  * 空闲自退（10 分钟无存活心跳）。
+ * WS 断线检测与自动重连见 ws-keeper.ts。
  *
  * 运行：`pi-feishu-gateway`（npm bin）或会话扩展 `/feishu-gateway on` 派生。
  */
@@ -13,22 +14,12 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { getFeishuConfig } from "../config";
 import { getCredentials } from "../credentials";
-import {
-	readClaims,
-	CLAIM_PATH,
-	isAlive,
-	GATEWAY_LOG_PATH,
-	GATEWAY_LOCK_PATH,
-} from "../claim";
+import { readClaims, isAlive, GATEWAY_LOG_PATH } from "../claim";
 import { writePending as writePendingFile } from "../pending";
 import { parseInboundEvent } from "../events";
 import { gatewayRoute } from "./route";
-import {
-	writeLock,
-	clearLock,
-	initIdleState,
-	tickIdle,
-} from "./lifecycle";
+import { writeLock, clearLock, initIdleState, tickIdle } from "./lifecycle";
+import { WsKeeper } from "./ws-keeper";
 import type { FeishuMessageEvent } from "../types";
 
 const SCAN_INTERVAL_MS = 30_000;
@@ -37,8 +28,12 @@ const SCAN_INTERVAL_MS = 30_000;
 fs.mkdirSync(path.dirname(GATEWAY_LOG_PATH), { recursive: true });
 const logStream = fs.createWriteStream(GATEWAY_LOG_PATH, { flags: "w" });
 function log(msg: string): void {
-	const line = `[${new Date().toISOString()}] ${msg}`;
-	logStream.write(line + "\n");
+	logStream.write(`[${new Date().toISOString()}] ${msg}\n`);
+}
+
+function shutdown(code: number): void {
+	logStream.end();
+	process.exit(code);
 }
 
 async function main(): Promise<void> {
@@ -91,14 +86,14 @@ async function main(): Promise<void> {
 	log(botOpenId ? `bot open_id: ${botOpenId}` : "⚠️ 无法获取 bot open_id（入站将不可用，重试中）");
 
 	// ── 入站处理 ──
-	function onEvent(data: FeishuMessageEvent): void {
+	function onMessage(data: unknown): void {
 		if (!botOpenId) {
 			void fetchBotOpenId().then((id) => {
 				if (id) botOpenId = id;
 			});
 			return;
 		}
-		const parsed = parseInboundEvent(data, botOpenId);
+		const parsed = parseInboundEvent(data as FeishuMessageEvent, botOpenId);
 		if (parsed.chatId !== config.chatId) return;
 		const liveClaims = (readClaims()[config.chatId] ?? []).filter((e) =>
 			isAlive(e),
@@ -107,7 +102,7 @@ async function main(): Promise<void> {
 			{
 				claims: liveClaims,
 				whitelist: config.whitelist,
-				writePending: (sessionId, data2) => writePendingFile(sessionId, data2),
+				writePending: (sessionId, d) => writePendingFile(sessionId, d),
 				reply: (text) => void reply(text),
 			},
 			parsed,
@@ -115,40 +110,30 @@ async function main(): Promise<void> {
 		if (action !== "ignored") log(`路由 ${action}: "${parsed.text.slice(0, 50)}"`);
 	}
 
-	// ── 唯一 WS 连接 ──
-	const dispatcher = new sdk.EventDispatcher({}).register({
-		"im.message.receive_v1": async (data: unknown) => {
-			try {
-				onEvent(data as FeishuMessageEvent);
-			} catch (err) {
-				log(`入站处理异常: ${err instanceof Error ? err.message : String(err)}`);
-			}
-		},
+	// ── 唯一 WS 连接（断线检测/重连见 ws-keeper） ──
+	const keeper = new WsKeeper(sdk, {
+		credentials,
+		onMessage,
+		reply,
+		log,
+		exit: (code) => shutdown(code),
 	});
-	const ws = new sdk.WSClient({
-		appId: credentials.appId,
-		appSecret: credentials.appSecret,
-	});
-	await ws.start({
-		eventDispatcher: dispatcher as unknown as import("@larksuiteoapi/node-sdk").EventDispatcher,
-	} as never);
-	log("WS 长连接已建立（全机器唯一客户端）");
+	await keeper.start();
+	keeper.startReconnectLoop(() => shutdown(1));
 
 	// ── 空闲自退扫描 ──
 	const idle = initIdleState();
 	const timer = setInterval(() => {
 		try {
 			const claims = readClaims();
-			const anyAlive = Object.values(claims)
-				.flat()
-				.some((e) => isAlive(e));
-			if (tickIdle(idle, anyAlive)) {
+			const anyAlive = Object.values(claims).flat().some((e) => isAlive(e));
+			if (keeper.connectedOnce() && tickIdle(idle, anyAlive)) {
 				log("所有会话离线超过 10 分钟，自退");
 				clearInterval(timer);
+				keeper.stop();
 				void reply("[pi] 所有会话离线，网关关闭").finally(() => {
 					clearLock();
-					logStream.end();
-					process.exit(0);
+					shutdown(0);
 				});
 			}
 		} catch (err) {

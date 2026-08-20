@@ -5,13 +5,14 @@
 
 import type { ClaimEntry } from "../types";
 import { isWhitelisted, parseCommand } from "../events";
+import type { PendingCommand } from "../pending";
 
 export interface GatewayRouteDeps {
 	/** 该群全部 claim（心跳判活由调用方或本函数完成） */
 	claims: ClaimEntry[];
 	whitelist: string[];
 	/** 写入目标会话的 pending 文件 */
-	writePending: (sessionId: string, data: { command: string; senderOpenId: string; arrivedAt: number; id: string }) => void;
+	writePending: (sessionId: string, data: PendingCommand) => void;
 	/** 回复群消息 */
 	reply: (text: string) => void;
 }
@@ -71,6 +72,21 @@ export function gatewayRoute(
 			`[pi] 会话 "${cmd.sessionName}" 不在线。当前在线:\n${live.map((e) => `- ${e.sessionName}`).join("\n") || "-（无）"}`,
 		);
 		return "not_found_reply";
+	}
+
+	// answer <编号> 指令：ask-user 问卷代答（会话侧程序化回填，不注入文本）
+	const answerMatch = /^(?:answer|代答)\s+(\d+)$/.exec(cmd.command);
+	if (answerMatch) {
+		deps.writePending(target.sessionId, {
+			command: cmd.command,
+			senderOpenId: parsed.senderOpenId ?? "unknown",
+			arrivedAt: now,
+			id: `pf-${now}-${Math.random().toString(36).slice(2, 8)}`,
+			kind: "ask-user-answer",
+			answerIndex: Number(answerMatch[1]),
+		});
+		deps.reply(`已转交 ${target.sessionName} 代答选项 ${answerMatch[1]}`);
+		return "routed";
 	}
 
 	deps.writePending(target.sessionId, {

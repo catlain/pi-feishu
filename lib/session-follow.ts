@@ -7,10 +7,12 @@ import * as path from "node:path";
 import type { FeishuConfig } from "./types";
 import type { FeishuCredentials } from "./credentials";
 import { FeishuBridgeClient } from "./client";
-import { addClaim, getChatClaims, removeClaim, touchHeartbeat } from "./claim";
+import { removeClaim, touchHeartbeat } from "./claim";
+import { registerClaim } from "./claim-register";
 import { consumePending, clearPending } from "./pending";
-import { generateSessionName } from "./naming";
-import { injectFeishuCommand, type HandlerState } from "./handlers";
+import { dispatchPending } from "./pending-dispatch";
+
+import { type HandlerState } from "./handlers";
 
 export type CommandCtx = {
 	ui: { notify: (msg: string, type?: "info" | "error" | "warning") => void };
@@ -60,17 +62,6 @@ export function createFollowController(
 		}
 	}
 
-	/** 在当前（排除自己）已占名字下生成唯一名 */
-	function register(
-		selfSessionId: string,
-		desired: string,
-	): string {
-		const taken = getChatClaims(config.chatId)
-			.filter((e) => e.sessionId !== selfSessionId)
-			.map((e) => e.sessionName);
-		return generateSessionName(desired, taken);
-	}
-
 	async function on(ctx: CommandCtx): Promise<void> {
 		if (!deps.credentials || !config.chatId) {
 			ctx.ui.notify(
@@ -87,26 +78,8 @@ export function createFollowController(
 
 		const selfSessionId = deps.getSelfSessionId();
 		const desired = config.sessionName ?? (path.basename(process.cwd()) || "session");
-		// 写入后回读校验：几乎同时 follow 的同名竞态让位追加后缀
-		sessionName = register(selfSessionId, desired);
-		addClaim(config.chatId, {
-			sessionId: selfSessionId,
-			sessionName,
-			claimedAt: Date.now(),
-			heartbeat: Date.now(),
-		});
-		const rival = getChatClaims(config.chatId).find(
-			(e) => e.sessionId !== selfSessionId && e.sessionName === sessionName,
-		);
-		if (rival) {
-			sessionName = register(selfSessionId, sessionName);
-			addClaim(config.chatId, {
-				sessionId: selfSessionId,
-				sessionName,
-				claimedAt: Date.now(),
-				heartbeat: Date.now(),
-			});
-		}
+		// 写入后回读校验：几乎同时 follow 的同名竞态让位追加后缀（claim-register.ts）
+		sessionName = registerClaim(config.chatId, selfSessionId, desired);
 
 		const bridge = new FeishuBridgeClient({
 			credentials: deps.credentials,
@@ -127,13 +100,11 @@ export function createFollowController(
 			}
 		}, HEARTBEAT_INTERVAL_MS);
 
-		// pending 轮询：~2s 读自己的指令文件 → 删 → 本地注入
+		// pending 轮询：~2s 读自己的指令文件 → 删 → 分发（dispatchPending）
 		pollTimer = setInterval(() => {
 			try {
 				const pending = consumePending(selfSessionId);
-				if (pending) {
-					injectFeishuCommand(pi, deps.state, pending.command, pending.senderOpenId);
-				}
+				if (pending) dispatchPending(pi, deps.state, pending, deps.log);
 			} catch {
 				// 轮询异常不致命
 			}

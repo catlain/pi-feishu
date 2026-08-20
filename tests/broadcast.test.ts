@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	broadcastAskWaiting,
 	broadcastReply,
+	buildAskWaitingBody,
 	summarizeQuestions,
 } from "../lib/broadcast";
 import {
@@ -103,7 +104,42 @@ describe("播报", () => {
 		expect(summarizeQuestions([{ question: "用哪个方案？", header: "方案" }])).toBe(
 			"[方案] 用哪个方案？",
 		);
-		expect(summarizeQuestions([])).toBe("AI 正在等待你的选择");
+	});
+
+	describe("buildAskWaitingBody", () => {
+		const singleQ = [
+			{
+				question: "用哪个方案？",
+				header: "方案",
+				options: [
+					{ label: "A", description: "快" },
+					{ label: "B" },
+				],
+			},
+		];
+
+		it("单题附编号选项和 answer 提示", () => {
+			const body = buildAskWaitingBody("catlain", singleQ);
+			expect(body).toContain("[方案] 用哪个方案？");
+			expect(body).toContain("1. A — 快");
+			expect(body).toContain("2. B");
+			expect(body).toContain("回复 @bot catlain answer <编号> 选择");
+		});
+
+		it("多题提示回终端操作", () => {
+			const body = buildAskWaitingBody("catlain", [
+				...singleQ,
+				{ question: "确认吗？", options: [{ label: "是" }] },
+			]);
+			expect(body).toContain("问题2: 确认吗？");
+			expect(body).toContain("多题暂不支持飞书应答");
+			expect(body).not.toContain("answer");
+		});
+
+		it("无选项时回退摘要", () => {
+			expect(buildAskWaitingBody("catlain", [{ question: "Q?" }])).toBe("Q?");
+			expect(buildAskWaitingBody("catlain", [])).toBe("AI 正在等待你的选择");
+		});
 	});
 });
 

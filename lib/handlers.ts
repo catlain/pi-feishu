@@ -3,11 +3,14 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getActiveAskParams, submitAskUserAnswer } from "@pi-atelier/rpiv-ask-user";
 import type { FeishuConfig } from "./types";
 import {
 	broadcastAskWaiting,
 	broadcastReply,
+	buildAskWaitingBody,
 	summarizeQuestions,
+	type AskPromptQuestion,
 } from "./broadcast";
 
 /** isIdle 安全调用（ctx 可能随会话销毁失效） */
@@ -100,17 +103,16 @@ export function handleAgentEnd(
 	);
 }
 
-/** rpiv:ask-user:prompt 等待提醒回调 */
+/** rpiv:ask-user:prompt 等待提醒回调：附选项列表 + answer 用法提示 */
 export function handleAskUserPrompt(
 	state: HandlerState,
 	data: unknown,
 	logger?: (msg: string) => void,
 ): void {
 	if (!state.active()) return;
-	const payload = data as {
-		questions?: Array<{ question?: string; header?: string }>;
-	};
-	const summary = summarizeQuestions(payload.questions ?? []);
+	const payload = data as { questions?: AskPromptQuestion[] };
+	const questions = payload.questions ?? [];
+	const body = buildAskWaitingBody(state.sessionName(), questions);
 	void broadcastAskWaiting(
 		{
 			client: state.rawClient() as never,
@@ -119,6 +121,47 @@ export function handleAskUserPrompt(
 			logger,
 		},
 		state.sessionName(),
-		summary,
+		body,
 	);
+}
+
+/** 消费 ask-user-answer pending：程序化回填问卷（幂等失败 → 播报过期） */
+export async function consumeAskUserAnswer(
+	state: HandlerState,
+	answerIndex: number,
+	senderOpenId: string,
+	logger?: (msg: string) => void,
+): Promise<void> {
+	const reply = (text: string): void => {
+		void state
+			.sendText(state.config.chatId, `[pi:${state.sessionName()}] ${text}`)
+			.catch(() => {});
+	};
+	const params = getActiveAskParams();
+	if (!params?.questions?.length) {
+		reply("问卷已答复或已过期");
+		return;
+	}
+	if (params.questions.length > 1) {
+		reply("⚠️ 多题问卷暂不支持飞书代答，请回终端操作");
+		return;
+	}
+	const q = params.questions[0]!;
+	const opt = q.options?.[answerIndex - 1];
+	if (!q.options?.length || !opt) {
+		reply(`编号 ${answerIndex} 无效，请对照提醒消息中的编号回复`);
+		return;
+	}
+	const ok = submitAskUserAnswer({
+		answers: [{ questionIndex: 0, question: q.question, kind: "option", answer: opt.label }],
+		cancelled: false,
+	});
+	if (ok) {
+		logger?.(
+			`[pi-feishu] ask-user 已由 ${senderOpenId.slice(0, 10)}… 代答: ${answerIndex}. ${opt.label}`,
+		);
+		reply(`✅ 已代答: ${answerIndex}. ${opt.label}`);
+	} else {
+		reply("问卷已答复或已过期");
+	}
 }

@@ -19,6 +19,10 @@ export interface PendingCommand {
 	arrivedAt: number;
 	/** 唯一 id（消费幂等用） */
 	id: string;
+	/** 指令种类：普通注入文本 / ask-user 问卷代答 */
+	kind?: "command" | "ask-user-answer";
+	/** kind=ask-user-answer 时：选项编号（1-based，写入前已验证） */
+	answerIndex?: number;
 }
 
 export function pendingPath(sessionId: string, dir = PENDING_DIR): string {

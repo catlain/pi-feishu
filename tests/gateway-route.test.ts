@@ -170,4 +170,50 @@ describe("gatewayRoute 网关路由", () => {
 		);
 		expect(pending[0]?.command).toBe("（空指令，请继续）");
 	});
+
+	it("answer 指令写入 ask-user-answer pending（含编号）", () => {
+		const pending: Array<Record<string, unknown>> = [];
+		const replies: string[] = [];
+		const a = gatewayRoute(
+			{
+				claims: mkClaims(),
+				whitelist: ["ou_ok"],
+				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				reply: (t) => replies.push(t),
+			},
+			{ ...base, text: "alpha answer 2" },
+		);
+		expect(a).toBe("routed");
+		expect(pending[0]?.kind).toBe("ask-user-answer");
+		expect(pending[0]?.answerIndex).toBe(2);
+		expect(replies[0]).toContain("代答选项 2");
+	});
+
+	it("中文代答指令等价", () => {
+		const pending: Array<Record<string, unknown>> = [];
+		gatewayRoute(
+			{
+				claims: mkClaims(),
+				whitelist: ["ou_ok"],
+				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				reply: () => {},
+			},
+			{ ...base, text: "alpha 代答 1" },
+		);
+		expect(pending[0]?.answerIndex).toBe(1);
+	});
+
+	it("answer 后缀多余文本走普通指令", () => {
+		const pending: Array<Record<string, unknown>> = [];
+		gatewayRoute(
+			{
+				claims: mkClaims(),
+				whitelist: ["ou_ok"],
+				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				reply: () => {},
+			},
+			{ ...base, text: "alpha answer 2 谢谢" },
+		);
+		expect(pending[0]?.kind).toBeUndefined();
+	});
 });

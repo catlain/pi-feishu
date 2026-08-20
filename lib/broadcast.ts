@@ -74,14 +74,45 @@ export async function broadcastReply(
 	return { sent, truncated: true, docUrl, error: docError };
 }
 
-/** 等待输入提醒（rpiv:ask-user:prompt） */
+/** 等待输入提醒（rpiv:ask-user:prompt）— text 为去掉会话名前缀的正文 */
 export async function broadcastAskWaiting(
 	deps: BroadcastDeps,
 	sessionName: string,
-	questionSummary: string,
+	text: string,
 ): Promise<boolean> {
-	const text = `[pi:${sessionName}] ⏸ 等待输入: ${questionSummary}`;
-	return safeSendText(deps, deps.config.chatId, text);
+	return safeSendText(deps, deps.config.chatId, `[pi:${sessionName}] ⏸ 等待输入: ${text}`);
+}
+
+/** 从 questions payload 生成带选项列表的提醒正文（不含前缀） */
+export function buildAskWaitingBody(
+	sessionName: string,
+	questions: AskPromptQuestion[],
+): string {
+	const first = questions.find((q) => q.question);
+	if (!first?.options?.length) return summarizeQuestions(questions);
+	const header = first.header ? `[${first.header}] ` : "";
+	const q0 = first.question!.slice(0, 80);
+	const lines: string[] = [`${header}${q0}`];
+
+	if (questions.length === 1) {
+		for (let i = 0; i < first.options!.length; i++) {
+			const o = first.options![i];
+			const desc = o.description ? ` — ${o.description}` : "";
+			lines.push(`${i + 1}. ${o.label}${desc}`);
+		}
+		lines.push(`回复 @bot ${sessionName} answer <编号> 选择`);
+	} else {
+		for (let qi = 0; qi < questions.length; qi++) {
+			const q = questions[qi];
+			if (!q.question) continue;
+			lines.push(`问题${qi + 1}: ${q.question.slice(0, 60)}`);
+			for (let i = 0; i < (q.options?.length ?? 0); i++) {
+				lines.push(`  ${qi + 1}.${i + 1} ${q.options![i].label}`);
+			}
+		}
+		lines.push("⚠️ 多题暂不支持飞书应答，请回终端操作");
+	}
+	return lines.join("\n");
 }
 
 /** 发送文本的统一降级封装 */
@@ -111,6 +142,20 @@ async function safeSendText(
 		);
 		return false;
 	}
+}
+
+/** ask-user 提醒 payload 中的问题结构 */
+export interface AskPromptOption {
+	label: string;
+	description?: string;
+	hasPreview?: boolean;
+}
+
+export interface AskPromptQuestion {
+	question?: string;
+	header?: string;
+	multiSelect?: boolean;
+	options?: AskPromptOption[];
 }
 
 /** 从 questions payload 生成问题摘要（首个问题的 question 截断） */
