@@ -165,11 +165,13 @@ export class WsKeeper {
 			...(this.opts.logger ? { logger: this.opts.logger } : {}),
 			// SDK 类型声明未收录 loggerLevel（运行时支持，真机已验证 debug 帧）；cast 绕过
 			...(this.opts.loggerLevel !== undefined ? { loggerLevel: this.opts.loggerLevel } : {}),
+			// liveness watchdog（SDK ≥1.64.0，官方 commit dc28142）：距上次 ping 后 90s 无任何入站帧
+			// （含 pong）→ 主动 terminate 触发标准重连。⚠️ 必须在构造器 wsConfig 传，start() 参数无效。
+			// 默认关闭（?? 0）；半开连接分钟级无感知 → 90s 内强制重建（根因：go-sdk#224 / node-sdk#164）
+			wsConfig: { pingTimeout: 90 },
 		} as ConstructorParameters<typeof import("@larksuiteoapi/node-sdk").WSClient>[0]);
 		await this.ws.start({
 			eventDispatcher: dispatcher as unknown as EventDispatcher,
-			// liveness watchdog：60s 无 pong 判死，SDK 自动进入内置重连循环
-			pingTimeout: 60,
 			onError: (err: Error) => {
 				this.terminal = true;
 				this.opts.log(`SDK 重连最终失败（terminal）: ${err.message}`);

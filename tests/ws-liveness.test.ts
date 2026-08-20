@@ -106,6 +106,13 @@ describe("重建原子性（D1）", () => {
 		await keeper.start();
 		expect(logs.some((l) => l.includes("旧 client 已关闭"))).toBe(true);
 	});
+
+	it("liveness watchdog 参数进构造器 wsConfig（start() 参数无效，防回归）", async () => {
+		const { keeper, startCalls } = mkKeeper();
+		await keeper.start();
+		const ctorOpts = startCalls[0] as { wsConfig?: { pingTimeout?: number } };
+		expect(ctorOpts?.wsConfig?.pingTimeout).toBe(90);
+	});
 });
 
 describe("D3 自退冻结：连接不健康时不推进 tickIdle", () => {
