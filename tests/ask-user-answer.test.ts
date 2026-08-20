@@ -31,10 +31,11 @@ function mkState() {
 	const sent: string[] = [];
 	return {
 		sent,
+		selfSessionId: "s-test",
 		sessionName: () => "a",
 		config: { chatId: "c" },
-		sendText: async (_chat: string, text: string) => {
-			sent.push(text);
+		appendOutboxFn: (_sid: string, e: { text: string }) => {
+			sent.push(e.text);
 		},
 		active: () => true,
 		liveCtx: () => ({ isIdle: () => true }),

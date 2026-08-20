@@ -11,6 +11,7 @@ import {
 	summarizeQuestions,
 	type AskPromptQuestion,
 } from "./broadcast";
+import { appendOutbox } from "./outbox";
 
 /** isIdle 安全调用（ctx 可能随会话销毁失效） */
 export function safeIsIdle(ctx: unknown): boolean {
@@ -27,8 +28,8 @@ export interface HandlerState {
 	config: FeishuConfig;
 	botOpenId: () => string | null;
 	liveCtx: () => unknown;
-	sendText: (chatId: string, text: string) => Promise<string | null>;
-	rawClient: () => unknown;
+	/** 出站写 outbox（网关发送） */
+	appendOutboxFn: (typeof appendOutbox) | null;
 	/** 是否处于 follow（激活）状态 */
 	active: () => boolean;
 }
@@ -89,14 +90,8 @@ export function handleAgentEnd(
 	if (!state.active()) return;
 	const text = extractAssistantText(event);
 	if (!text.trim()) return;
-	const raw = state.rawClient();
 	void broadcastReply(
-		{
-			client: raw as never,
-			getDocClient: () => raw as never,
-			config: state.config,
-			logger,
-		},
+		{ sessionId: state.selfSessionId, config: state.config, logger },
 		state.sessionName(),
 		text,
 	);
@@ -113,12 +108,7 @@ export function handleAskUserPrompt(
 	const questions = payload.questions ?? [];
 	const body = buildAskWaitingBody(state.sessionName(), questions);
 	void broadcastAskWaiting(
-		{
-			client: state.rawClient() as never,
-			getDocClient: () => null,
-			config: state.config,
-			logger,
-		},
+		{ sessionId: state.selfSessionId, config: state.config, logger },
 		state.sessionName(),
 		body,
 	);
@@ -145,10 +135,14 @@ export async function consumeAskUserAnswer(
 	senderOpenId: string,
 	logger?: (msg: string) => void,
 ): Promise<void> {
+	const append = state.appendOutboxFn;
 	const reply = (text: string): void => {
-		void state
-			.sendText(state.config.chatId, `[pi:${state.sessionName()}] ${text}`)
-			.catch(() => {});
+		if (!append) return;
+		append(state.selfSessionId, {
+			kind: "reply",
+			text: `[pi:${state.sessionName()}] ${text}`,
+			expectAck: false,
+		});
 	};
 	const api = askUserApi();
 	const params = api?.getActiveAskParams();

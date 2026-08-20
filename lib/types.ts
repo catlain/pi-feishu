@@ -59,6 +59,37 @@ export interface FeishuMessageEvent {
 	mentions?: FeishuMention[];
 }
 
+/** 出站条目回执（网关发送后回写） */
+export interface OutboxResult {
+	sent: boolean;
+	/** 飞书 message_id */
+	messageId?: string;
+	/** doc-export 类导出的文档链接 */
+	docUrl?: string;
+	/** 发送/导出失败原因（回写后不再重试） */
+	error?: string;
+}
+
+/** 出站条目 — outbox/<sessionId>.json FIFO 数组元素 */
+export interface OutboxEntry {
+	/** 唯一 id */
+	id: string;
+	/** reply | ask-waiting | topic-head | doc-export */
+	kind: "reply" | "ask-waiting" | "topic-head" | "doc-export";
+	/** 会话侧写时间戳 */
+	createdAt: number;
+	/** 发送正文（doc-export 为摘要正文，链接由网关追加） */
+	text: string;
+	/** 需回执：网关发送后回写 result，会话读取后删除 */
+	expectAck: boolean;
+	/** 网关回写的回执（未发送时缺省） */
+	result?: OutboxResult;
+	/** kind=doc-export 时：文档标题 */
+	docTitle?: string;
+	/** kind=doc-export 时：文档全文 */
+	docText?: string;
+}
+
 /** 入站消息解析结果 */
 export interface ParsedInbound {
 	/** @ 了本 bot */

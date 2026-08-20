@@ -5,12 +5,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { FeishuConfig } from "./types";
-import type { FeishuCredentials } from "./credentials";
-import { FeishuBridgeClient } from "./client";
-import { removeClaim, touchHeartbeat } from "./claim";
+import { removeClaim, touchHeartbeat, getChatClaims, addClaim } from "./claim";
 import { registerClaim } from "./claim-register";
 import { consumePending, clearPending } from "./pending";
 import { dispatchPending } from "./pending-dispatch";
+import { drainAcked } from "./outbox";
 
 import { type HandlerState } from "./handlers";
 
@@ -38,10 +37,9 @@ export function createFollowController(
 	pi: ExtensionAPI,
 	deps: {
 		config: FeishuConfig;
-		credentials: FeishuCredentials | null;
 		log: (msg: string) => void;
 		state: HandlerState;
-		setBridge: (b: FeishuBridgeClient | null) => void;
+		setOutboundActive: (v: boolean) => void;
 		getSelfSessionId: () => string;
 	},
 ): FollowController {
@@ -63,10 +61,9 @@ export function createFollowController(
 	}
 
 	async function on(ctx: CommandCtx): Promise<void> {
-		if (!deps.credentials || !config.chatId) {
+		if (!config.chatId) {
 			ctx.ui.notify(
-				"⚠️ pi-feishu 未激活：请设置环境变量 FEISHU_APP_ID / FEISHU_APP_SECRET，" +
-					"并在 settings.json 的 feishu.chatId 配置目标群 chat_id",
+				"⚠️ pi-feishu 未激活：请在 settings.json 的 feishu.chatId 配置目标群 chat_id",
 				"warning",
 			);
 			return;
@@ -81,12 +78,8 @@ export function createFollowController(
 		// 写入后回读校验：几乎同时 follow 的同名竞态让位追加后缀（claim-register.ts）
 		sessionName = registerClaim(config.chatId, selfSessionId, desired);
 
-		const bridge = new FeishuBridgeClient({
-			credentials: deps.credentials,
-			logger: deps.log,
-		});
-		await bridge.ensureClient(); // 出站 REST 客户端初始化
-		deps.setBridge(bridge);
+		// 出站全走 outbox（网关发送），会话侧无需 REST client / 凭据
+		deps.setOutboundActive(true);
 
 		// 清理上次会话遗留 pending（不注入过期指令）
 		clearPending(selfSessionId);
@@ -105,6 +98,9 @@ export function createFollowController(
 			try {
 				const pending = consumePending(selfSessionId);
 				if (pending) dispatchPending(pi, deps.state, pending, deps.log);
+				// 同一 tick 取走 outbox 回执（expectAck 条目的网关回写）
+				const acked = drainAcked(selfSessionId);
+				if (acked.length > 0) deps.log(`[pi-feishu] outbox 回执 ${acked.length} 条`);
 			} catch {
 				// 轮询异常不致命
 			}
@@ -126,7 +122,7 @@ export function createFollowController(
 		clearPending(deps.getSelfSessionId());
 		stopTimers();
 		followed = false;
-		deps.setBridge(null);
+		deps.setOutboundActive(false);
 		ctx.ui.notify(`已停止 follow（会话名: ${sessionName}）`, "info");
 	}
 

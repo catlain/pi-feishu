@@ -18,6 +18,8 @@ import { readClaims, isAlive, GATEWAY_LOG_PATH } from "../claim";
 import { writePending as writePendingFile } from "../pending";
 import { parseInboundEvent } from "../events";
 import { gatewayRoute } from "./route";
+import { startGatewayOutbox } from "./outbox-drainer";
+import { exportToDoc } from "../doc";
 import { readLock, writeLock, clearLock, initIdleState, tickIdle, isProcessAlive } from "./lifecycle";
 import { WsKeeper } from "./ws-keeper";
 import { createSdkLogger, noopStdio } from "./stdio";
@@ -106,7 +108,10 @@ async function main(): Promise<void> {
 			return;
 		}
 		const parsed = parseInboundEvent(data as FeishuMessageEvent, botOpenId);
-		if (parsed.chatId !== config.chatId) return;
+		if (parsed.chatId !== config.chatId) {
+			log(`入站丢弃：chatId 不匹配 event=${parsed.chatId} config=${config.chatId}`);
+			return;
+		}
 		const liveClaims = (readClaims()[config.chatId] ?? []).filter((e) =>
 			isAlive(e),
 		);
@@ -134,6 +139,16 @@ async function main(): Promise<void> {
 	});
 	await keeper.start();
 	keeper.startReconnectLoop(() => shutdown(1));
+
+	startGatewayOutbox(
+		client as never,
+		config.chatId,
+		{
+			exportDoc: (title, text) => exportToDoc(client as never, title, text),
+			log: (msg) => log(msg),
+		},
+	);
+	log("outbox-drainer 已启动（重启重放：遗留条目将按 FIFO 补发，过期 ask-waiting 丢弃）");
 
 	// ── 空闲自退扫描 ──
 	const idle = initIdleState();

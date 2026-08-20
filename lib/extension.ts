@@ -7,8 +7,8 @@
 import type { ExtensionFactory, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getFeishuConfig } from "./config";
 import { getCredentials } from "./credentials";
-import type { FeishuBridgeClient } from "./client";
 import { getChatClaims, isAlive } from "./claim";
+import { appendOutbox } from "./outbox";
 import { gatewayOn, gatewayOff, gatewayStatus } from "./gateway/commands";
 import { createFollowController, type CommandCtx } from "./session-follow";
 import {
@@ -21,9 +21,10 @@ export const createFeishuExtension: ExtensionFactory = (pi) => {
 	const config = getFeishuConfig(process.cwd());
 	const credentials = getCredentials(config);
 
-	let bridge: FeishuBridgeClient | null = null;
 	/** 最近一次事件 ctx（isIdle 判断需要） */
 	let liveCtx: ExtensionContext | null = null;
+	/** 出站激活标记：follow on 时置 true（出站走 outbox，无需 client） */
+	let outboundActive = false;
 
 	const log = (msg: string) => {
 		try {
@@ -41,20 +42,18 @@ export const createFeishuExtension: ExtensionFactory = (pi) => {
 		config,
 		botOpenId: () => null,
 		liveCtx: () => liveCtx,
-		sendText: async (chatId, text) => bridge?.sendText(chatId, text) ?? null,
-		rawClient: () => bridge?.rawClient() ?? null,
-		active: () => follow.followed() && !!bridge,
+		appendOutboxFn: appendOutbox,
+		active: () => follow.followed() && outboundActive,
 	};
 
 	const follow = createFollowController(pi, {
 		config,
-		credentials,
 		log,
 		state,
-		setBridge: (b) => {
-			bridge = b;
-		},
 		getSelfSessionId: () => process.env.PI_SESSION_ID ?? "",
+		setOutboundActive: (v: boolean) => {
+			outboundActive = v;
+		},
 	});
 
 	// ── 事件 ctx 跟踪（isIdle 用） ──

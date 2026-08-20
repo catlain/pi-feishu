@@ -1,86 +1,81 @@
 /**
  * 出站播报 — agent_end 回复推送、ask-user 等待提醒、长回复截断+文档导出
+ * 全双工架构：出站一律写 outbox（网关发送），会话侧纯本地文件 IO，
+ * 不再直连飞书 REST（凭据只在网关进程）。
  */
 
-import {
-	buildDocTitle,
-	exportToDoc,
-	truncateForChat,
-} from "./doc";
+import { buildDocTitle, truncateForChat } from "./doc";
+import { appendOutbox } from "./outbox";
 import type { FeishuConfig } from "./types";
 
-/** 发送文档能力（docx，可缺省） */
-export interface DocxLike {
-	docx: {
-		document: { create: (args: unknown) => Promise<unknown> };
-		documentBlock: { children: { create: (args: unknown) => Promise<unknown> } };
-	};
-}
-
-/** 出站发送能力的最小结构类型（避免拉入完整 lark Client 类型） */
-export interface ImLike {
-	im: { message: { create: (args: unknown) => Promise<unknown> } };
-}
+/** outbox 条目构造参数（去 id/createdAt） */
+export type OutboxAppend = Parameters<typeof appendOutbox>[1];
 
 export interface BroadcastDeps {
-	client: ImLike;
-	getDocClient: () => DocxLike | null;
 	config: FeishuConfig;
+	/** 会话 id（outbox 文件名） */
+	sessionId: string;
 	logger?: (msg: string) => void;
+	/** 测试注入用 */
+	append?: typeof appendOutbox;
 }
 
 export interface BroadcastResult {
+	/** 已写入 outbox 即视为已受理（发送由网关异步完成） */
 	sent: boolean;
 	truncated: boolean;
-	docUrl?: string;
-	error?: string;
+}
+
+function append(deps: BroadcastDeps, entry: OutboxAppend): void {
+	(deps.append ?? appendOutbox)(deps.sessionId, entry);
 }
 
 /**
- * 播报 AI 回复到群：带会话名前缀；超阈值截断 + 全文写飞书文档。
- * 发送/文档失败均静默降级，不抛出。
+ * 播报 AI 回复到群：带会话名前缀；超阈值截断 + 全文经网关写飞书文档。
+ * 出站写 outbox（fire-and-forget），不感知发送结果。
  */
-export async function broadcastReply(
+export function broadcastReply(
 	deps: BroadcastDeps,
 	sessionName: string,
 	replyText: string,
-): Promise<BroadcastResult> {
+): BroadcastResult {
 	const { config } = deps;
 	const prefix = `[pi:${sessionName}]`;
 	const threshold = config.truncateThreshold;
 
 	if (replyText.length <= threshold) {
-		const sent = await safeSendText(deps, config.chatId, `${prefix}\n${replyText}`);
-		return { sent, truncated: false };
+		append(deps, {
+			kind: "reply",
+			text: `${prefix}\n${replyText}`,
+			expectAck: false,
+		});
+		return { sent: true, truncated: false };
 	}
 
-	// 长回复：尝试文档导出
-	const docClient = deps.getDocClient();
-	let docUrl: string | undefined;
-	let docError: string | undefined;
-	if (docClient) {
-		const title = buildDocTitle(sessionName, replyText);
-		const result = await exportToDoc(docClient, title, replyText);
-		if (result.ok) docUrl = result.url;
-		else docError = result.error;
-	}
-
+	// 长回复：doc-export 条目（网关侧导出文档 + 追加链接）
 	const summary = truncateForChat(replyText, threshold);
-	let message = `${prefix}\n${summary}`;
-	if (docUrl) message += `\n📄 全文: ${docUrl}`;
-	else if (docError) message += `\n⚠️ 文档导出失败（${docError}）`;
-
-	const sent = await safeSendText(deps, config.chatId, message);
-	return { sent, truncated: true, docUrl, error: docError };
+	append(deps, {
+		kind: "doc-export",
+		text: `${prefix}\n${summary}`,
+		expectAck: false,
+		docTitle: buildDocTitle(sessionName, replyText),
+		docText: replyText,
+	});
+	return { sent: true, truncated: true };
 }
 
 /** 等待输入提醒（rpiv:ask-user:prompt）— text 为去掉会话名前缀的正文 */
-export async function broadcastAskWaiting(
+export function broadcastAskWaiting(
 	deps: BroadcastDeps,
 	sessionName: string,
 	text: string,
-): Promise<boolean> {
-	return safeSendText(deps, deps.config.chatId, `[pi:${sessionName}] ⏸ 等待输入: ${text}`);
+): boolean {
+	append(deps, {
+		kind: "ask-waiting",
+		text: `[pi:${sessionName}] ⏸ 等待输入: ${text}`,
+		expectAck: false,
+	});
+	return true;
 }
 
 /** 从 questions payload 生成带选项列表的提醒正文（不含前缀） */
@@ -107,41 +102,12 @@ export function buildAskWaitingBody(
 			if (!q.question) continue;
 			lines.push(`问题${qi + 1}: ${q.question.slice(0, 60)}`);
 			for (let i = 0; i < (q.options?.length ?? 0); i++) {
-				lines.push(`  ${qi + 1}.${i + 1} ${q.options![i].label}`);
+				lines.push(`  ${qi + 1}.${i + 1} ${q.options![i]!.label}`);
 			}
 		}
 		lines.push("⚠️ 多题暂不支持飞书应答，请回终端操作");
 	}
 	return lines.join("\n");
-}
-
-/** 发送文本的统一降级封装 */
-async function safeSendText(
-	deps: BroadcastDeps,
-	chatId: string,
-	text: string,
-): Promise<boolean> {
-	try {
-		const res = await deps.client.im.message.create({
-			data: {
-				receive_id: chatId,
-				content: JSON.stringify({ text }),
-				msg_type: "text",
-			},
-			params: { receive_id_type: "chat_id" },
-		} as never);
-		const code = (res as unknown as { code?: number }).code;
-		if (code !== 0 && code !== undefined) {
-			deps.logger?.(`[pi-feishu] 群消息发送失败 code=${code}`);
-			return false;
-		}
-		return true;
-	} catch (err) {
-		deps.logger?.(
-			`[pi-feishu] 群消息发送异常: ${err instanceof Error ? err.message : String(err)}`,
-		);
-		return false;
-	}
 }
 
 /** ask-user 提醒 payload 中的问题结构 */

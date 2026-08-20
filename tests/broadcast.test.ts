@@ -12,6 +12,7 @@ import {
 	truncateForChat,
 } from "../lib/doc";
 import type { FeishuConfig } from "../lib/types";
+import type { OutboxEntry } from "../lib/types";
 
 const config: FeishuConfig = {
 	chatId: "c1",
@@ -19,85 +20,55 @@ const config: FeishuConfig = {
 	truncateThreshold: 2000,
 };
 
-function makeClient(impl?: { create?: ReturnType<typeof vi.fn> }) {
-	const create = impl?.create ?? vi.fn().mockResolvedValue({ code: 0, data: { message_id: "m1" } });
-	const client = { im: { message: { create } } };
-	return client;
+/** mock outbox：收集追加的条目 */
+function mkDeps() {
+	const entries: OutboxEntry[] = [];
+	const append = vi.fn((sessionId: string, e: Omit<OutboxEntry, "id" | "createdAt">) => {
+		entries.push({ id: `id${entries.length}`, createdAt: Date.now(), ...e });
+	});
+	return {
+		entries,
+		deps: {
+			config,
+			sessionId: "s1",
+			append: append as never,
+		},
+	};
 }
 
-describe("播报", () => {
-	it("阈值内直发（带会话名前缀）", async () => {
-		const client = makeClient();
-		const r = await broadcastReply(
-			{ client, getDocClient: () => null, config },
-			"quant",
-			"短回复",
-		);
+describe("播报（outbox 出站）", () => {
+	it("阈值内写 reply 条目（带会话名前缀，fire-and-forget）", () => {
+		const { deps, entries } = mkDeps();
+		const r = broadcastReply(deps, "quant", "短回复");
 		expect(r.sent).toBe(true);
 		expect(r.truncated).toBe(false);
-		const arg = (client.im.message.create as ReturnType<typeof vi.fn>).mock.calls[0]![0];
-		expect(JSON.parse(arg.data.content).text).toContain("[pi:quant]");
+		expect(entries).toHaveLength(1);
+		expect(entries[0]!.kind).toBe("reply");
+		expect(entries[0]!.expectAck).toBe(false);
+		expect(entries[0]!.text).toContain("[pi:quant]");
+		expect(entries[0]!.text).toContain("短回复");
 	});
 
-	it("超阈值截断 + 文档导出 + 链接回群", async () => {
+	it("超阈值写 doc-export 条目（摘要 + 标题 + 全文）", () => {
 		const long = "x".repeat(2500);
-		const client = makeClient();
-		const r = await broadcastReply(
-			{
-				client,
-				getDocClient: () =>
-					({
-						docx: {
-							document: { create: vi.fn().mockResolvedValue({ code: 0, data: { document: { document_id: "d1" } } }) },
-							documentBlock: { children: { create: vi.fn().mockResolvedValue({ code: 0 }) } },
-						},
-					}) as never,
-				config,
-			},
-			"quant",
-			long,
-		);
+		const { deps, entries } = mkDeps();
+		const r = broadcastReply(deps, "quant", long);
 		expect(r.truncated).toBe(true);
-		expect(r.docUrl).toBe("https://feishu.cn/docx/d1");
-		const arg = (client.im.message.create as ReturnType<typeof vi.fn>).mock.calls[0]![0];
-		expect(JSON.parse(arg.data.content).text).toContain("https://feishu.cn/docx/d1");
+		expect(entries).toHaveLength(1);
+		const e = entries[0]!;
+		expect(e.kind).toBe("doc-export");
+		expect(e.docTitle).toMatch(/^\[pi\] quant \d{4}-/);
+		expect(e.docText).toBe(long);
+		expect(e.text).toContain("…（已截断，全文见文档）");
 	});
 
-	it("文档创建失败降级：仍发截断内容 + 失败提示", async () => {
-		const long = "y".repeat(2500);
-		const client = makeClient();
-		const r = await broadcastReply(
-			{
-				client,
-				getDocClient: () =>
-					({
-						docx: {
-							document: { create: vi.fn().mockResolvedValue({ code: 230002, msg: "no permission" }) },
-						},
-					}) as never,
-				config,
-			},
-			"quant",
-			long,
-		);
-		expect(r.sent).toBe(true);
-		expect(r.docUrl).toBeUndefined();
-		expect(r.error).toContain("no permission");
-	});
-
-	it("发送异常静默降级不抛出", async () => {
-		const client = makeClient({ create: vi.fn().mockRejectedValue(new Error("net")) });
-		const r = await broadcastReply({ client, getDocClient: () => null, config }, "q", "hi");
-		expect(r.sent).toBe(false);
-	});
-
-	it("ask-user 等待提醒含摘要", async () => {
-		const client = makeClient();
-		await broadcastAskWaiting({ client, getDocClient: () => null, config }, "quant", "选哪个？");
-		const arg = (client.im.message.create as ReturnType<typeof vi.fn>).mock.calls[0]![0];
-		const text = JSON.parse(arg.data.content).text;
-		expect(text).toContain("⏸ 等待输入");
-		expect(text).toContain("选哪个？");
+	it("ask-user 等待提醒写 ask-waiting 条目含摘要", () => {
+		const { deps, entries } = mkDeps();
+		broadcastAskWaiting(deps, "quant", "选哪个？");
+		expect(entries).toHaveLength(1);
+		expect(entries[0]!.kind).toBe("ask-waiting");
+		expect(entries[0]!.text).toContain("⏸ 等待输入");
+		expect(entries[0]!.text).toContain("选哪个？");
 	});
 
 	it("summarizeQuestions 取首个问题", () => {
