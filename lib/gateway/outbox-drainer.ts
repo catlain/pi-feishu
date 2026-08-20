@@ -28,6 +28,8 @@ export interface DrainerDeps {
 	exportDoc: (title: string, text: string) => Promise<{ ok: boolean; url?: string; error?: string } | null>;
 	/** 发送成功后记录锚点（messageId → sessionId）；缺省不记（测试/旧调用兼容） */
 	recordAnchor?: (messageId: string, sessionId: string) => void;
+	/** 任一发送成功回调（帧水位判活出站侧接线） */
+	onSent?: () => void;
 	log: (msg: string) => void;
 }
 
@@ -61,6 +63,7 @@ export async function drainSession(
 		if (result.sent && result.messageId && deps.recordAnchor) {
 			deps.recordAnchor(result.messageId, sessionId);
 		}
+		if (result.sent) deps.onSent?.();
 		if (entry.expectAck) {
 			writeAck(sessionId, entry.id, result, dir);
 		} else {
@@ -137,6 +140,8 @@ export function startGatewayOutbox(
 	chatId: string,
 	deps: {
 		exportDoc: (title: string, text: string) => Promise<{ ok: boolean; url?: string; error?: string } | null>;
+		/** 任一发送成功回调（帧水位判活出站侧接线） */
+		onSent?: () => void;
 		log: (msg: string) => void;
 	},
 	intervalMs = 2000,
@@ -164,6 +169,7 @@ export function startGatewayOutbox(
 			exportDoc: deps.exportDoc,
 			// 每条出站即锚点（feishu-reply-binding D1）：messageId → sessionId
 			recordAnchor,
+			onSent: deps.onSent,
 			log: deps.log,
 		},
 		intervalMs,

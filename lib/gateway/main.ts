@@ -15,7 +15,7 @@ import * as os from "node:os";
 import { getFeishuConfig } from "../config";
 import { getCredentials } from "../credentials";
 import { readClaims, isAlive, GATEWAY_LOG_PATH } from "../claim";
-import { initAnchors } from "./anchors";
+import { initAnchors, recordAnchor } from "./anchors";
 import { writePending as writePendingFile } from "../pending";
 import { parseInboundEvent } from "../events";
 import { gatewayRoute } from "./route";
@@ -107,8 +107,14 @@ async function main(): Promise<void> {
 	log(botOpenId ? `bot open_id: ${botOpenId}` : "⚠️ 无法获取 bot open_id（入站将不可用，重试中）");
 
 	// ── 入站处理 ──
+	// botOpenId 缺失丢弃日志（5 分钟节流）
+	let lastBotIdWarnAt = 0;
 	function onMessage(data: unknown): void {
 		if (!botOpenId) {
+			if (Date.now() - lastBotIdWarnAt > 5 * 60_000) {
+				lastBotIdWarnAt = Date.now();
+				log("⚠️ 入站丢弃：botOpenId 未就绪（获取失败重试中），期间消息不可路由");
+			}
 			void fetchBotOpenId().then((id) => {
 				if (id) botOpenId = id;
 			});
@@ -144,13 +150,20 @@ async function main(): Promise<void> {
 	const keeper = new WsKeeper(sdk, {
 		credentials,
 		onMessage,
-		reply,
+		reply: (text) => {
+			keeperNotifyOutbound();
+			return reply(text);
+		},
 		log,
 		exit: (code) => shutdown(code),
 		// SDK logger 注入文件流，SDK 日志不再写 console；debug 级打印每条 WS 收帧（丢包诊断，定位后改回）
 		logger: createSdkLogger((line) => logStream.write(`${line}\n`)),
 		loggerLevel: 4,
 	});
+	// 出站成功 → 刷新帧水位判活的出站侧（reply 路径）
+	function keeperNotifyOutbound(): void {
+		keeper.notifyOutboundOk();
+	}
 	await keeper.start();
 	keeper.startReconnectLoop(() => shutdown(1));
 
@@ -160,6 +173,8 @@ async function main(): Promise<void> {
 		{
 			exportDoc: (title, text) => exportToDoc(client as never, title, text),
 			log: (msg) => log(msg),
+			// 出站成功 → 刷新帧水位判活出站侧（会话播报路径）
+			onSent: () => keeper.notifyOutboundOk(),
 		},
 	);
 	log("outbox-drainer 已启动（重启重放：遗留条目将按 FIFO 补发，过期 ask-waiting 丢弃）");
@@ -170,7 +185,8 @@ async function main(): Promise<void> {
 		try {
 			const claims = readClaims();
 			const anyAlive = Object.values(claims).flat().some((e) => isAlive(e));
-			if (keeper.connectedOnce() && tickIdle(idle, anyAlive)) {
+			// D3：仅「连接健康且无存活 claim」才推进自退；黑洞/重建期冻结计时，防网关在恢复窗口内消失
+			if (keeper.isConnected(Date.now()) && keeper.connectedOnce() && tickIdle(idle, anyAlive)) {
 				log("所有会话离线超过 10 分钟，自退");
 				clearInterval(timer);
 				keeper.stop();
