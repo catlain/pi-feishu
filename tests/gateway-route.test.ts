@@ -189,7 +189,21 @@ describe("gatewayRoute 网关路由", () => {
 		expect(replies[0]).toContain("代答选项 2");
 	});
 
-	it("裸编号指令等价代答", () => {
+	it("awr 简写指令等价代答", () => {
+		const pending: Array<Record<string, unknown>> = [];
+		gatewayRoute(
+			{
+				claims: mkClaims(),
+				whitelist: ["ou_ok"],
+				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				reply: () => {},
+			},
+			{ ...base, text: "alpha awr 2" },
+		);
+		expect(pending[0]?.answerIndex).toBe(2);
+	});
+
+	it("裸数字不再作为代答指令（走普通注入）", () => {
 		const pending: Array<Record<string, unknown>> = [];
 		gatewayRoute(
 			{
@@ -200,19 +214,19 @@ describe("gatewayRoute 网关路由", () => {
 			},
 			{ ...base, text: "alpha 2" },
 		);
-		expect(pending[0]?.answerIndex).toBe(2);
+		expect(pending[0]?.kind).toBeUndefined();
 	});
 
-	it("裸编号后缀多余文本仍走普通指令", () => {
+	it("awr 后缀多余文本仍走普通指令", () => {
 		const pending: Array<Record<string, unknown>> = [];
 		gatewayRoute(
 			{
 				claims: mkClaims(),
-				whitelist: ["ou_ok"],
+					whitelist: ["ou_ok"],
 				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
 				reply: () => {},
 			},
-			{ ...base, text: "alpha 2 谢谢" },
+			{ ...base, text: "alpha awr 2 谢谢" },
 		);
 		expect(pending[0]?.kind).toBeUndefined();
 	});
