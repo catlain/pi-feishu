@@ -3,7 +3,6 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getActiveAskParams, submitAskUserAnswer } from "@pi-atelier/rpiv-ask-user";
 import type { FeishuConfig } from "./types";
 import {
 	broadcastAskWaiting,
@@ -125,6 +124,20 @@ export function handleAskUserPrompt(
 	);
 }
 
+/** fork 包在 globalThis 上注册的 API 入口（无依赖消费） */
+function askUserApi(): {
+	getActiveAskParams: () => { questions?: Array<{ question?: string; options?: Array<{ label: string }> }> } | null;
+	submitAskUserAnswer: (r: {
+		answers: Array<{ questionIndex: number; question?: string; kind: "option"; answer: string }>;
+		cancelled: boolean;
+	}) => boolean;
+} | null {
+	const s = globalThis as Record<symbol, unknown>;
+	return (
+		(s[Symbol.for("@pi-atelier/rpiv-ask-user/api")] as ReturnType<typeof askUserApi>) ?? null
+	);
+}
+
 /** 消费 ask-user-answer pending：程序化回填问卷（幂等失败 → 播报过期） */
 export async function consumeAskUserAnswer(
 	state: HandlerState,
@@ -137,8 +150,9 @@ export async function consumeAskUserAnswer(
 			.sendText(state.config.chatId, `[pi:${state.sessionName()}] ${text}`)
 			.catch(() => {});
 	};
-	const params = getActiveAskParams();
-	if (!params?.questions?.length) {
+	const api = askUserApi();
+	const params = api?.getActiveAskParams();
+	if (!api || !params?.questions?.length) {
 		reply("问卷已答复或已过期");
 		return;
 	}
@@ -152,7 +166,7 @@ export async function consumeAskUserAnswer(
 		reply(`编号 ${answerIndex} 无效，请对照提醒消息中的编号回复`);
 		return;
 	}
-	const ok = submitAskUserAnswer({
+	const ok = api.submitAskUserAnswer({
 		answers: [{ questionIndex: 0, question: q.question, kind: "option", answer: opt.label }],
 		cancelled: false,
 	});

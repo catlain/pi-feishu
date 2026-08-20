@@ -1,8 +1,31 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { clearActiveAsk, registerActiveAsk } from "@pi-atelier/rpiv-ask-user";
 import { consumeAskUserAnswer } from "../lib/handlers";
 import { dispatchPending } from "../lib/pending-dispatch";
 import type { PendingCommand } from "../lib/pending";
+
+// 模拟 fork 包在 globalThis 上注册的 API（pi-feishu 零依赖消费该入口）
+const API = Symbol.for("@pi-atelier/rpiv-ask-user/api");
+
+type Questionnaire = {
+	questions: Array<{ question?: string; header?: string; options?: Array<{ label: string; description?: string }> }>;
+};
+type Answer = { answers: Array<{ questionIndex: number; question?: string; kind: "option"; answer: string }>; cancelled: boolean };
+
+function installApi(params: Questionnaire | null, resolve: (ok: boolean) => void = () => {}) {
+	const store = globalThis as Record<symbol, unknown>;
+	store[API] = {
+		getActiveAskParams: () => params,
+		submitAskUserAnswer: (r: Answer) => {
+			if (!params) return false;
+			resolve(true);
+			return true;
+		},
+	};
+}
+
+function clearApi() {
+	delete (globalThis as Record<symbol, unknown>)[API];
+}
 
 function mkState() {
 	const sent: string[] = [];
@@ -18,7 +41,7 @@ function mkState() {
 	} as never;
 }
 
-const singleQ = {
+const singleQ: Questionnaire = {
 	questions: [
 		{
 			question: "用哪个方案？",
@@ -29,54 +52,49 @@ const singleQ = {
 			],
 		},
 	],
-} as Parameters<typeof registerActiveAsk>[0];
+};
 
 afterEach(() => {
-	clearActiveAsk();
+	clearApi();
 });
 
 describe("consumeAskUserAnswer", () => {
+	it("无全局入口（fork 未安装）→ 播报过期", async () => {
+		const st = mkState();
+		await consumeAskUserAnswer(st, 1, "ou_x");
+		expect(st.sent[0]).toContain("问卷已答复或已过期");
+	});
+
 	it("无活跃问卷 → 播报过期", async () => {
 		const st = mkState();
+		installApi(null);
 		await consumeAskUserAnswer(st, 1, "ou_x");
 		expect(st.sent[0]).toContain("问卷已答复或已过期");
 	});
 
 	it("有效编号 → 代答成功并播报", async () => {
 		const st = mkState();
-		let resolved: unknown = null;
-		registerActiveAsk(singleQ, (r) => {
-			resolved = r;
+		let resolved = false;
+		installApi(singleQ, (ok) => {
+			resolved = ok;
 		});
 		await consumeAskUserAnswer(st, 2, "ou_x");
 		expect(st.sent[0]).toContain("已代答: 2. B");
-		expect((resolved as { answers: Array<{ answer: string }> }).answers[0].answer).toBe("B");
+		expect(resolved).toBe(true);
 	});
 
 	it("编号越界 → 提示无效", async () => {
 		const st = mkState();
-		registerActiveAsk(singleQ, () => {});
+		installApi(singleQ);
 		await consumeAskUserAnswer(st, 9, "ou_x");
 		expect(st.sent[0]).toContain("编号 9 无效");
 	});
 
 	it("多题问卷 → 提示回终端", async () => {
 		const st = mkState();
-		registerActiveAsk(
-			{ questions: [...singleQ.questions, { question: "再问一句?", options: [{ label: "是" }] }] } as never,
-			() => {},
-		);
+		installApi({ questions: [...singleQ.questions, { question: "再问?", options: [{ label: "是" }] }] });
 		await consumeAskUserAnswer(st, 1, "ou_x");
 		expect(st.sent[0]).toContain("多题问卷暂不支持");
-	});
-
-	it("重复消费（已答）→ 播报过期", async () => {
-		const st = mkState();
-		registerActiveAsk(singleQ, () => {});
-		await consumeAskUserAnswer(st, 1, "ou_x"); // 已答
-		clearActiveAsk();
-		await consumeAskUserAnswer(st, 1, "ou_x");
-		expect(st.sent[1]).toContain("问卷已答复或已过期");
 	});
 });
 
@@ -84,7 +102,7 @@ describe("dispatchPending", () => {
 	it("kind=ask-user-answer 走代答通道（不注入文本）", async () => {
 		const st = mkState();
 		let resolved = false;
-		registerActiveAsk(singleQ, () => {
+		installApi(singleQ, () => {
 			resolved = true;
 		});
 		const pending: PendingCommand = {

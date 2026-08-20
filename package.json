@@ -7,15 +7,14 @@
 		"pi-feishu-gateway": "bin/pi-feishu-gateway.js"
 	},
 	"dependencies": {
-		"jiti": "^2.6.3",
 		"@larksuiteoapi/node-sdk": "^1.51.0",
 		"@pi-atelier/shared-utils": "^1.0.0",
-		"@pi-atelier/rpiv-ask-user": "2.5.2"
+		"jiti": "^2.6.3"
 	},
 	"devDependencies": {
 		"@vitest/coverage-v8": "^3.2.4",
-		"vitest": "^3.0.0",
-		"typescript": "^6.0.3"
+		"typescript": "^6.0.3",
+		"vitest": "^3.0.0"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": ">=0.1.0",
