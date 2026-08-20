@@ -19,12 +19,15 @@ import {
 	writeAck,
 } from "../outbox";
 import type { OutboxEntry, OutboxResult } from "../types";
+import { recordAnchor } from "./anchors";
 
 export interface DrainerDeps {
 	/** 统一发送入口：文本 → 飞书 REST（失败不抛出，返回 error） */
 	sendEntry: (entry: OutboxEntry, text: string) => Promise<{ sent: boolean; messageId?: string; error?: string }>;
 	/** 文档导出（无 docx 能力时返回 null） */
 	exportDoc: (title: string, text: string) => Promise<{ ok: boolean; url?: string; error?: string } | null>;
+	/** 发送成功后记录锚点（messageId → sessionId）；缺省不记（测试/旧调用兼容） */
+	recordAnchor?: (messageId: string, sessionId: string) => void;
 	log: (msg: string) => void;
 }
 
@@ -54,6 +57,10 @@ export async function drainSession(
 		}
 		const result = await sendEntry(entry, deps);
 		sent++;
+		// 发送成功即锚点（D1）：expectAck 与 fire-and-forget 条目都记
+		if (result.sent && result.messageId && deps.recordAnchor) {
+			deps.recordAnchor(result.messageId, sessionId);
+		}
 		if (entry.expectAck) {
 			writeAck(sessionId, entry.id, result, dir);
 		} else {
@@ -155,6 +162,8 @@ export function startGatewayOutbox(
 				}
 			},
 			exportDoc: deps.exportDoc,
+			// 每条出站即锚点（feishu-reply-binding D1）：messageId → sessionId
+			recordAnchor,
 			log: deps.log,
 		},
 		intervalMs,

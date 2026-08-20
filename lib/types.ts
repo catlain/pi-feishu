@@ -51,6 +51,10 @@ export interface FeishuMessageEvent {
 		mentions?: FeishuMention[];
 		/** 消息创建时间（飞书服务端毫秒时间戳字符串） */
 		create_time?: string;
+		/** 引用回复目标消息 id（实测单层引用时与 root_id 相等，指向被引用消息） */
+		parent_id?: string;
+		/** 回复链根消息 id */
+		root_id?: string;
 	};
 	sender?: {
 		sender_type?: string;
@@ -106,4 +110,6 @@ export interface ParsedInbound {
 	text: string;
 	/** 飞书服务端消息创建时间（ms）；无则为 null */
 	eventTimeMs: number | null;
+	/** 引用回复目标消息 id（非回复消息为 null） */
+	parentId: string | null;
 }

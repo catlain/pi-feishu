@@ -15,6 +15,7 @@ import * as os from "node:os";
 import { getFeishuConfig } from "../config";
 import { getCredentials } from "../credentials";
 import { readClaims, isAlive, GATEWAY_LOG_PATH } from "../claim";
+import { initAnchors } from "./anchors";
 import { writePending as writePendingFile } from "../pending";
 import { parseInboundEvent } from "../events";
 import { gatewayRoute } from "./route";
@@ -60,6 +61,9 @@ async function main(): Promise<void> {
 
 	writeLock(process.pid);
 	log(`pi-feishu-gateway 启动 pid=${process.pid}`);
+
+	// 锦点表从 anchors.json 恢复（与 outbox 重放同批加载）
+	initAnchors();
 
 	// ── 出站 REST Client（回执/报错用） ──
 	const sdk = await import("@larksuiteoapi/node-sdk");

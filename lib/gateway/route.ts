@@ -6,6 +6,7 @@
 import type { ClaimEntry } from "../types";
 import { isWhitelisted, parseCommand } from "../events";
 import type { PendingCommand } from "../pending";
+import { lookupAnchor } from "./anchors";
 
 export interface GatewayRouteDeps {
 	/** 该群全部 claim（心跳判活由调用方或本函数完成） */
@@ -31,14 +32,57 @@ export function gatewayRoute(
 		senderOpenId: string | null;
 		isSelfMessage: boolean;
 		text: string;
+		/** 引用回复目标消息 id（锦点路由优先；非回复消息为 null） */
+		parentId?: string | null;
 	},
 	now: number = Date.now(),
 ): GatewayRouteAction {
 	if (parsed.isSelfMessage) return "ignored";
-	if (!parsed.mentionedBot) return "ignored";
 	if (!isWhitelisted(parsed.senderOpenId, deps.whitelist)) return "ignored";
 
 	const text = parsed.text.trim();
+
+	// ── 引用回复路由优先（D3）：免 @ 免名字直达 ──
+	if (parsed.parentId) {
+		const anchorSid = lookupAnchor(parsed.parentId);
+		if (anchorSid) {
+			// 判活联合判断（D2）：锚点管归属，claim 表管谁在线可路由
+			const target = deps.claims.find((e) => e.sessionId === anchorSid);
+			if (!target) {
+				deps.reply(
+					`[pi] 该会话已离线。当前在线:\n${deps.claims.map((e) => `- ${e.sessionName}`).join("\n") || "-（无）"}`,
+				);
+				return "not_found_reply";
+			}
+			// awr 代答在引用路由下同样直达（D5）
+			const answerMatch = /^(?:awr|answer|代答)\s+(\d+)$/.exec(text);
+			if (answerMatch) {
+				deps.writePending(anchorSid, {
+					command: text,
+					senderOpenId: parsed.senderOpenId ?? "unknown",
+					arrivedAt: now,
+					id: `pf-${now}-${Math.random().toString(36).slice(2, 8)}`,
+					kind: "ask-user-answer",
+					answerIndex: Number(answerMatch[1]),
+				});
+				deps.reply(`已转交 ${target.sessionName} 代答选项 ${answerMatch[1]}`);
+				return "routed";
+			}
+			deps.writePending(anchorSid, {
+				command: text || "（空指令，请继续）",
+				senderOpenId: parsed.senderOpenId ?? "unknown",
+				arrivedAt: now,
+				id: `pf-${now}-${Math.random().toString(36).slice(2, 8)}`,
+			});
+			deps.reply(`已转交 ${target.sessionName}`);
+			return "routed";
+		}
+		// 未命中的引用消息：仅当明确 @bot 才走名字路由，否则静默忽略
+		if (!parsed.mentionedBot) return "ignored";
+	}
+
+	if (!parsed.mentionedBot) return "ignored";
+
 	if (!text) return "ignored";
 
 	const live = deps.claims;

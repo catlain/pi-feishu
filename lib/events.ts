@@ -53,6 +53,9 @@ export function parseInboundEvent(
 	const text = stripMentionPlaceholders(extractText(data.message?.content));
 	const eventTimeMs = data.message?.create_time ? Number(data.message.create_time) : null;
 
+	// 引用回复：parent_id 指向被引用消息（锚点路由用）
+	const parentId = data.message?.parent_id ?? null;
+
 	return {
 		mentionedBot,
 		senderOpenId,
@@ -60,6 +63,7 @@ export function parseInboundEvent(
 		chatId,
 		text,
 		eventTimeMs: Number.isFinite(eventTimeMs) ? eventTimeMs : null,
+		parentId,
 	};
 }
 
