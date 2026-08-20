@@ -44,8 +44,15 @@ describe("WsKeeper.isConnected 状态映射", () => {
 	it.each(["connected", "reconnecting", "connecting"])(
 		"%s 视为健康",
 		(state) => {
-			const { keeper } = makeKeeper({ state });
+			const keeper = new WsKeeper({} as never, {
+				credentials: { appId: "a", appSecret: "b" },
+				onMessage: () => {},
+				reply: async () => {},
+				log: () => {},
+				exit: () => {},
+			});
 			// terminal=false、ws 已存在：直接注入私有字段模拟已启动
+			(keeper as unknown as { terminal: boolean }).terminal = false;
 			(keeper as unknown as { ws: unknown }).ws = {
 				getConnectionStatus: () => ({ state }),
 			};
