@@ -51,8 +51,16 @@ export function parseInboundEvent(
 	// chat_id 实际在 message 层，兼容顶层
 	const chatId = data.message?.chat_id ?? data.chat?.chat_id ?? null;
 	const text = stripMentionPlaceholders(extractText(data.message?.content));
+	const eventTimeMs = data.message?.create_time ? Number(data.message.create_time) : null;
 
-	return { mentionedBot, senderOpenId, isSelfMessage, chatId, text };
+	return {
+		mentionedBot,
+		senderOpenId,
+		isSelfMessage,
+		chatId,
+		text,
+		eventTimeMs: Number.isFinite(eventTimeMs) ? eventTimeMs : null,
+	};
 }
 
 /** 白名单校验：open_id 精确匹配，空名单默认拒绝 */

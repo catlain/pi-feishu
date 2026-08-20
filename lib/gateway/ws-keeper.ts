@@ -117,6 +117,9 @@ export class WsKeeper {
 		this.hadConnectedOnce = true;
 		this.lastEventAt = Date.now();
 		this.opts.log("WS 长连接已建立（全机器唯一客户端，SDK 内置重连 + 水位兜底）");
+		// 启动就绪播报：飞书服务端切到新连接有过渡期（实测约 1 分钟内，期间事件丢弃不重投），
+		// 群里收到本条即代表可正常遥控
+		void this.opts.reply("[pi] 网关已就绪");
 	}
 
 	/** 启动兜底扫描循环（30s）：SDK terminal 或水位死亡时整体重建；持续失败 30 分钟熔断 */

@@ -49,6 +49,8 @@ export interface FeishuMessageEvent {
 			sender_id?: { open_id?: string };
 		};
 		mentions?: FeishuMention[];
+		/** 消息创建时间（飞书服务端毫秒时间戳字符串） */
+		create_time?: string;
 	};
 	sender?: {
 		sender_type?: string;
@@ -102,4 +104,6 @@ export interface ParsedInbound {
 	chatId: string | null;
 	/** 提及后的剩余文本（已去除 @占位符） */
 	text: string;
+	/** 飞书服务端消息创建时间（ms）；无则为 null */
+	eventTimeMs: number | null;
 }

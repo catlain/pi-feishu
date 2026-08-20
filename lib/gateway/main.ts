@@ -124,7 +124,13 @@ async function main(): Promise<void> {
 			},
 			parsed,
 		);
-		if (action !== "ignored") log(`路由 ${action}: "${parsed.text.slice(0, 50)}"`);
+		if (action !== "ignored") {
+			const delay = parsed.eventTimeMs ? Date.now() - parsed.eventTimeMs : null;
+			log(
+				`路由 ${action}: "${parsed.text.slice(0, 50)}"` +
+					(delay !== null ? `（事件延迟 ${(delay / 1000).toFixed(1)}s）` : "（无事件时间戳）"),
+			);
+		}
 	}
 
 	// ── 唯一 WS 连接（断线检测/重连见 ws-keeper） ──
