@@ -24,7 +24,18 @@ export interface ClaimEntry {
 
 export type ClaimFile = Record<string, ClaimEntry[]>;
 
-/** 飞书 im.message.receive_v1 事件体（只声明用到的字段） */
+/** mention 条目（实测在 data.message.mentions） */
+export interface FeishuMention {
+	key?: string;
+	id?: { open_id?: string; user_id?: string };
+	name?: string;
+	mentioned_type?: string;
+	tenant_key?: string;
+}
+
+/** 飞书 im.message.receive_v1 事件体（只声明用到的字段）
+ * 实测（2026-06-20 dump）：mentions 在 message 层、chat_id 在 message 层、
+ * sender 在顶层 —— 各字段位置不同，兼容两种位置 */
 export interface FeishuMessageEvent {
 	message?: {
 		message_id?: string;
@@ -35,18 +46,15 @@ export interface FeishuMessageEvent {
 			sender_type?: string;
 			sender_id?: { open_id?: string };
 		};
+		mentions?: FeishuMention[];
 	};
 	sender?: {
 		sender_type?: string;
 		sender_id?: { open_id?: string };
 	};
 	chat?: { chat_id?: string };
-	mentions?: Array<{
-		key?: string;
-		id?: { open_id?: string; user_id?: string };
-		name?: string;
-		tenant_key?: string;
-	}>;
+	/** 兼容：部分事件版本在顶层 */
+	mentions?: FeishuMention[];
 }
 
 /** 入站消息解析结果 */

@@ -26,6 +26,8 @@ export function extractText(content: string | undefined): string {
 /**
  * 解析入站事件。
  * botOpenId：本 bot 的 open_id（mentions 匹配用）。
+ * 实测（2026-06-20 事件 dump）：mentions 在 data.message.mentions，chat_id 在 data.message.chat_id，
+ * sender 在顶层 data.sender —— 各字段位置不同，逐字段兼容两层。
  */
 export function parseInboundEvent(
 	data: FeishuMessageEvent,
@@ -41,12 +43,13 @@ export function parseInboundEvent(
 		data.message?.sender?.sender_id?.open_id ??
 		null;
 
-	// @bot 检测：mentions 数组匹配 bot open_id（不依赖 text 字符串）
-	const mentionedBot = (data.mentions ?? []).some(
-		(m) => m.id?.open_id === botOpenId,
-	);
+	// @bot 检测：mentions 数组匹配 bot open_id（不依赖 text 字符串）。
+	// mentions 实际在 message 层，兼容顶层
+	const mentions = data.message?.mentions ?? data.mentions ?? [];
+	const mentionedBot = mentions.some((m) => m.id?.open_id === botOpenId);
 
-	const chatId = data.chat?.chat_id ?? data.message?.chat_id ?? null;
+	// chat_id 实际在 message 层，兼容顶层
+	const chatId = data.message?.chat_id ?? data.chat?.chat_id ?? null;
 	const text = stripMentionPlaceholders(extractText(data.message?.content));
 
 	return { mentionedBot, senderOpenId, isSelfMessage, chatId, text };

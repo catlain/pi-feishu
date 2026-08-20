@@ -10,7 +10,41 @@ import {
 const BOT = "ou_bot_123";
 
 describe("事件解析", () => {
-	it("@bot 检测查 mentions 数组", () => {
+	// 真实事件 dump 回归（2026-06-20）：mentions/chat_id 在 message 层，sender 在顶层
+	const REAL_EVENT = {
+		schema: "2.0",
+		event_id: "ev_1",
+		event_type: "im.message.receive_v1",
+		message: {
+			chat_id: "oc_670632481857a95a4ff61a731c034218",
+			content: '{"text":"@_user_1 list list list"}',
+			mentions: [
+				{
+					id: { open_id: "ou_22effd5e7d84081e5fdc35bc61ea729b", union_id: "on_x", user_id: null },
+					key: "@_user_1",
+					mentioned_type: "bot",
+					name: "pi-assistant",
+				},
+			],
+		},
+		sender: {
+			sender_id: { open_id: "ou_105ece6b306a3cdbb03f810f0cc4c484", union_id: "on_y", user_id: null },
+			sender_type: "user",
+			tenant_key: "1741900dbf4c9740",
+		},
+	};
+	const BOT = "ou_22effd5e7d84081e5fdc35bc61ea729b";
+
+	it("真实事件 dump：mentions 在 message 层能匹配 @bot", () => {
+		const r = parseInboundEvent(REAL_EVENT as never, BOT);
+		expect(r.mentionedBot).toBe(true);
+		expect(r.senderOpenId).toBe("ou_105ece6b306a3cdbb03f810f0cc4c484");
+		expect(r.chatId).toBe("oc_670632481857a95a4ff61a731c034218");
+		expect(r.text).toBe("list list list");
+		expect(r.isSelfMessage).toBe(false);
+	});
+
+	it("顶层 mentions 兼容", () => {
 		const r = parseInboundEvent(
 			{
 				mentions: [{ key: "@_user_1", id: { open_id: BOT } }],
