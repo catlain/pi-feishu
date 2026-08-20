@@ -82,7 +82,7 @@ export class WsKeeper {
 		const dispatcher = new this.sdk.EventDispatcher({}).register({
 			"im.message.receive_v1": async (data: unknown) => {
 				this.lastEventAt = Date.now();
-				try {
+			try {
 					this.opts.onMessage(data);
 				} catch (err) {
 					this.opts.log(

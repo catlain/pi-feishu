@@ -15,7 +15,8 @@ export interface GatewayRouteDeps {
 	/** 写入目标会话的 pending 文件 */
 	writePending: (sessionId: string, data: PendingCommand) => void;
 	/** 回复群消息 */
-	reply: (text: string) => void;
+	/** 回复；anchorSessionId 非空时该提示语也记为该会话的锦点（用户引用「已转交」可续聊） */
+	reply: (text: string, anchorSessionId?: string) => void;
 }
 
 export type GatewayRouteAction =
@@ -65,7 +66,7 @@ export function gatewayRoute(
 					kind: "ask-user-answer",
 					answerIndex: Number(answerMatch[1]),
 				});
-				deps.reply(`已转交 ${target.sessionName} 代答选项 ${answerMatch[1]}`);
+				deps.reply(`已转交 ${target.sessionName} 代答选项 ${answerMatch[1]}`, anchorSid);
 				return "routed";
 			}
 			deps.writePending(anchorSid, {
@@ -74,7 +75,7 @@ export function gatewayRoute(
 				arrivedAt: now,
 				id: `pf-${now}-${Math.random().toString(36).slice(2, 8)}`,
 			});
-			deps.reply(`已转交 ${target.sessionName}`);
+			deps.reply(`已转交 ${target.sessionName}`, anchorSid);
 			return "routed";
 		}
 		// 未命中的引用消息：仅当明确 @bot 才走名字路由，否则静默忽略

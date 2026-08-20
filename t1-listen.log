@@ -1,0 +1,68 @@
+[info]: [ 'client ready' ]
+== WS 监听启动（全量 dump 事件，Ctrl+C 退出）==
+>> 事件同时写入 t1-events.jsonl
+[info]: [ 'event-dispatch is ready' ]
+[info]: [
+  '[ws]',
+  'receive events or callbacks through persistent connection only available in self-build & Feishu app, Configured in:\n' +
+    '        Developer Console(开发者后台)\n' +
+    '          ->\n' +
+    '        Events and Callbacks(事件与回调)\n' +
+    '          ->\n' +
+    '        Mode of event/callback subscription(订阅方式)\n' +
+    '          ->\n' +
+    '        Receive events/callbacks through persistent connection(使用 长连接 接收事件/回调)'
+]
+>> 已连接，等待群事件…（注意：现有网关若在跑会互踢 WS，验证期间先停网关）
+[info]: [ '[ws]', 'ws client ready' ]
+
+===== 收到事件 =====
+{
+  "schema": "2.0",
+  "event_id": "a5e7b00c6fb79fb8b6c1ba1ab935fd0e",
+  "token": "",
+  "create_time": "1787234192382",
+  "event_type": "im.message.receive_v1",
+  "tenant_key": "1741900dbf4c9740",
+  "app_id": "cli_aa0cd7a772b91ccd",
+  "message": {
+    "chat_id": "oc_670632481857a95a4ff61a731c034218",
+    "chat_type": "group",
+    "content": "{\"text\":\"@_user_1 121312141\"}",
+    "create_time": "1787234191998",
+    "mentions": [
+      {
+        "id": {
+          "open_id": "ou_22effd5e7d84081e5fdc35bc61ea729b",
+          "union_id": "on_b4a99cd29cd581e32f9be58f0521491e",
+          "user_id": null
+        },
+        "key": "@_user_1",
+        "mentioned_type": "bot",
+        "name": "pi-assistant",
+        "tenant_key": "1741900dbf4c9740"
+      }
+    ],
+    "message_id": "om_x100b6744363304a0b489ae54b41bd45",
+    "message_type": "text",
+    "parent_id": "om_x100b674436ac7ca4df97db5180abaaa",
+    "root_id": "om_x100b674436ac7ca4df97db5180abaaa",
+    "update_time": "1787234192130"
+  },
+  "sender": {
+    "sender_id": {
+      "open_id": "ou_105ece6b306a3cdbb03f810f0cc4c484",
+      "union_id": "on_ba0c1749fde608708dcb96c27533481e",
+      "user_id": null
+    },
+    "sender_type": "user",
+    "tenant_key": "1741900dbf4c9740"
+  }
+}
+--- 关键字段 ---
+message_id: om_x100b6744363304a0b489ae54b41bd45
+parent_id: om_x100b674436ac7ca4df97db5180abaaa
+root_id:   om_x100b674436ac7ca4df97db5180abaaa
+chat_id:   oc_670632481857a95a4ff61a731c034218
+chat_type: group
+mentions:  [{"id":{"open_id":"ou_22effd5e7d84081e5fdc35bc61ea729b","union_id":"on_b4a99cd29cd581e32f9be58f0521491e","user_id":null},"key":"@_user_1","mentioned_type":"bot","name":"pi-assistant","tenant_key":"1741900dbf4c9740"}]

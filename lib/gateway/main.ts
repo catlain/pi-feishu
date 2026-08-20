@@ -72,16 +72,19 @@ async function main(): Promise<void> {
 		appSecret: credentials.appSecret,
 	});
 
-	async function reply(text: string): Promise<void> {
+	async function reply(text: string, anchorSessionId?: string): Promise<void> {
 		try {
-			await client.im.message.create({
+			const res = (await client.im.message.create({
 				data: {
 					receive_id: config.chatId,
 					content: JSON.stringify({ text }),
 					msg_type: "text",
 				},
 				params: { receive_id_type: "chat_id" },
-			});
+			})) as { data?: { message_id?: string } };
+			// 网关提示语也可作锦点（绑定目标会话）：用户引用「已转交 xxx」续聊是自然意图
+			const mid = res?.data?.message_id;
+			if (anchorSessionId && mid) recordAnchor(mid, anchorSessionId);
 		} catch (err) {
 			log(`群回复失败: ${err instanceof Error ? err.message : String(err)}`);
 		}
