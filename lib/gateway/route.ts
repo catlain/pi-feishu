@@ -74,8 +74,8 @@ export function gatewayRoute(
 		return "not_found_reply";
 	}
 
-	// answer <编号> 指令：ask-user 问卷代答（会话侧程序化回填，不注入文本）
-	const answerMatch = /^(?:answer|代答)\s+(\d+)$/.exec(cmd.command);
+	// answer <编号> / 代答 <编号> / 裸编号：ask-user 问卷代答（会话侧程序化回填，不注入文本）
+	const answerMatch = /^(?:(?:answer|代答)\s+)?(\d+)$/.exec(cmd.command);
 	if (answerMatch) {
 		deps.writePending(target.sessionId, {
 			command: cmd.command,

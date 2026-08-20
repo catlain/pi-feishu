@@ -123,7 +123,7 @@ describe("播报", () => {
 			expect(body).toContain("[方案] 用哪个方案？");
 			expect(body).toContain("1. A — 快");
 			expect(body).toContain("2. B");
-			expect(body).toContain("回复 @bot catlain answer <编号> 选择");
+			expect(body).toContain("回复 @bot catlain <编号> 选择");
 		});
 
 		it("多题提示回终端操作", () => {

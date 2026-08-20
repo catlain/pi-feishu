@@ -189,6 +189,34 @@ describe("gatewayRoute 网关路由", () => {
 		expect(replies[0]).toContain("代答选项 2");
 	});
 
+	it("裸编号指令等价代答", () => {
+		const pending: Array<Record<string, unknown>> = [];
+		gatewayRoute(
+			{
+				claims: mkClaims(),
+				whitelist: ["ou_ok"],
+				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				reply: () => {},
+			},
+			{ ...base, text: "alpha 2" },
+		);
+		expect(pending[0]?.answerIndex).toBe(2);
+	});
+
+	it("裸编号后缀多余文本仍走普通指令", () => {
+		const pending: Array<Record<string, unknown>> = [];
+		gatewayRoute(
+			{
+				claims: mkClaims(),
+				whitelist: ["ou_ok"],
+				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				reply: () => {},
+			},
+			{ ...base, text: "alpha 2 谢谢" },
+		);
+		expect(pending[0]?.kind).toBeUndefined();
+	});
+
 	it("中文代答指令等价", () => {
 		const pending: Array<Record<string, unknown>> = [];
 		gatewayRoute(

@@ -100,7 +100,7 @@ export function buildAskWaitingBody(
 			const desc = o.description ? ` — ${o.description}` : "";
 			lines.push(`${i + 1}. ${o.label}${desc}`);
 		}
-		lines.push(`回复 @bot ${sessionName} answer <编号> 选择`);
+		lines.push(`回复 @bot ${sessionName} <编号> 选择`);
 	} else {
 		for (let qi = 0; qi < questions.length; qi++) {
 			const q = questions[qi];
