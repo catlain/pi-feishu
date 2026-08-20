@@ -147,8 +147,9 @@ async function main(): Promise<void> {
 		reply,
 		log,
 		exit: (code) => shutdown(code),
-		// SDK logger 注入文件流，SDK 日志不再写 console
+		// SDK logger 注入文件流，SDK 日志不再写 console；debug 级打印每条 WS 收帧（丢包诊断，定位后改回）
 		logger: createSdkLogger((line) => logStream.write(`${line}\n`)),
+		loggerLevel: 4,
 	});
 	await keeper.start();
 	keeper.startReconnectLoop(() => shutdown(1));

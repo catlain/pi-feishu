@@ -75,6 +75,10 @@ export class WsKeeper {
 		return this.hadConnectedOnce;
 	}
 
+	/** 已处理 eventId 去重（防官方 3s 超时重推导致重复注入）；滚动保留最近 256 条 */
+	private seenEventIds = new Set<string>();
+	private seenEventIdsRing: string[] = [];
+
 	/** 建立全新 WSClient（首次与整体重启共用；SDK 断线自愈由其内置循环负责） */
 	async start(): Promise<void> {
 		this.terminal = false;
@@ -82,7 +86,21 @@ export class WsKeeper {
 		const dispatcher = new this.sdk.EventDispatcher({}).register({
 			"im.message.receive_v1": async (data: unknown) => {
 				this.lastEventAt = Date.now();
-			try {
+				// eventId 去重：官方 3s 超时重推会重复送达同一事件
+				const evId = (data as { header?: { event_id?: string } })?.header?.event_id;
+				if (evId) {
+					if (this.seenEventIds.has(evId)) {
+						this.opts.log(`重复事件丢弃（eventId=${evId}，官方重推机制）`);
+						return;
+					}
+					this.seenEventIds.add(evId);
+					this.seenEventIdsRing.push(evId);
+					if (this.seenEventIdsRing.length > 256) {
+						const old = this.seenEventIdsRing.shift();
+						if (old) this.seenEventIds.delete(old);
+					}
+				}
+				try {
 					this.opts.onMessage(data);
 				} catch (err) {
 					this.opts.log(
@@ -95,6 +113,7 @@ export class WsKeeper {
 			appId: this.opts.credentials.appId,
 			appSecret: this.opts.credentials.appSecret,
 			...(this.opts.logger ? { logger: this.opts.logger } : {}),
+			...(this.opts.loggerLevel !== undefined ? { loggerLevel: this.opts.loggerLevel } : {}),
 		});
 		await this.ws.start({
 			eventDispatcher: dispatcher as unknown as EventDispatcher,
