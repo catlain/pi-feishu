@@ -19,6 +19,50 @@ export type GatewayCommandCtx = {
 	ui: { notify: (msg: string, type?: "info" | "error" | "warning") => void };
 };
 
+/**
+ * 扫描与飞书同 app 抢 WS 事件的竞争进程（验证脚本残留监听器等）。
+ * 事件会被服务端随机分发给同 app 的所有 WS 连接 → 网关时通时不通的元凶。
+ */
+export function findCompetingFeishuClients(excludePid?: number): Array<{ pid: number; cmd: string }> {
+	let out = "";
+	try {
+		if (process.platform === "win32") {
+			try {
+				out = childProcess
+					.execSync(
+						`wmic process where "name='node.exe'" get ProcessId,CommandLine /format:csv`,
+						{ encoding: "utf-8", timeout: 8000 },
+					)
+					.toString();
+			} catch {
+					// wmic 已从新 Windows 移除 → PowerShell 回退（CSV 输出格式对齐）
+					out = childProcess
+						.execSync(
+							"powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"name='node.exe'\\\" | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation\"",
+							{ encoding: "utf-8", timeout: 15000 },
+						)
+						.toString();
+				}
+		} else {
+			out = childProcess
+				.execSync("ps -eo pid,args", { encoding: "utf-8", timeout: 8000 })
+				.toString();
+		}
+	} catch {
+			return []; // 扫描失败不阻塞命令
+	}
+	const found: Array<{ pid: number; cmd: string }> = [];
+	for (const line of out.split("\n")) {
+		if (!/feishu/i.test(line)) continue;
+		// 网关本体（含软链路径差异）排除；本进程排除
+		if (/pi-feishu-gateway(\\|\/|\.js|$)/.test(line)) continue;
+		const pid = /(?:^|,)(\d+)\s*$/.exec(line.trim())?.[1];
+		if (!pid || Number(pid) === process.pid || Number(pid) === excludePid) continue;
+		found.push({ pid: Number(pid), cmd: line.trim().slice(0, 120) });
+	}
+	return found;
+}
+
 export function gatewayOn(
 	ctx: GatewayCommandCtx,
 	hasCredentials: boolean,
@@ -30,6 +74,7 @@ export function gatewayOn(
 	const lock = readLock();
 	if (lock && isProcessAlive(lock.pid)) {
 		ctx.ui.notify(`网关已运行（PID ${lock.pid}）`, "info");
+		warnCompeting(ctx, lock.pid);
 		return;
 	}
 	if (lock) {
@@ -46,6 +91,19 @@ export function gatewayOn(
 	});
 	child.unref();
 	ctx.ui.notify(`✅ 网关已启动（PID ${child.pid}），日志: ${GATEWAY_LOG_PATH}`, "info");
+	warnCompeting(ctx, child.pid);
+}
+
+/** 发现同 app 竞争 WS 连接时提示用户（事件会被分流，网关时通时不通） */
+function warnCompeting(ctx: GatewayCommandCtx, gatewayPid?: number): void {
+	const rivals = findCompetingFeishuClients(gatewayPid);
+	if (rivals.length === 0) return;
+	ctx.ui.notify(
+		`⚠️ 检测到 ${rivals.length} 个其他飞书 WS 客户端进程（验证脚本残留等），会抢走网关事件导致时通时不通：\n` +
+			rivals.map((r) => `- PID ${r.pid}: ${r.cmd}`).join("\n") +
+			"\n建议：taskkill //PID <pid> //F 清理后重试",
+		"warning",
+	);
 }
 
 export function gatewayOff(ctx: GatewayCommandCtx): void {
@@ -78,6 +136,7 @@ export function gatewayStatus(
 ): void {
 	const lock = readLock();
 	const running = isLockValid();
+	warnCompeting(ctx, lock?.pid);
 	ctx.ui.notify(
 		`网关状态: ${running ? `✅ 运行中（PID ${lock?.pid}）` : "未运行"}\n` +
 			`follow 会话:\n${claims
