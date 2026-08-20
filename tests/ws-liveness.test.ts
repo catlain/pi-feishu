@@ -44,13 +44,15 @@ function mkKeeper() {
 	return { keeper, dispatcherReg, logs, startCalls };
 }
 
-describe("帧水位判活（D2）", () => {
+describe("帧水位判活（D2，默认禁用、PI_FEISHU_FRAME_DEAD=1 启用）", () => {
 	afterEach(() => {
 		vi.useRealTimers();
+		delete process.env.PI_FEISHU_FRAME_DEAD;
 	});
 
-	it("黑洞 + 有出站 → 判死", async () => {
+	it("黑洞 + 有出站 → 判死（仅显式启用时）", async () => {
 		vi.useFakeTimers();
+		process.env.PI_FEISHU_FRAME_DEAD = "1";
 		const { keeper, dispatcherReg } = mkKeeper();
 		await keeper.start();
 		// 初始健康（刚 start，帧水位新鲜）
@@ -60,6 +62,17 @@ describe("帧水位判活（D2）", () => {
 		vi.setSystemTime(t2);
 		keeper.notifyOutboundOk();
 		expect(keeper.isConnected(t2)).toBe(false);
+	});
+
+	it("默认禁用：黑洞 + 有出站 → 不判死（防静默期误杀循环）", async () => {
+		vi.useFakeTimers();
+		delete process.env.PI_FEISHU_FRAME_DEAD;
+		const { keeper } = mkKeeper();
+		await keeper.start();
+		const t2 = Date.now() + FRAME_DEAD_MS + 1000;
+		vi.setSystemTime(t2);
+		keeper.notifyOutboundOk();
+		expect(keeper.isConnected(t2)).toBe(true); // SDK 快照 connected → 健康
 	});
 
 	it("纯静默（无出站）→ 不判死", async () => {
@@ -107,9 +120,10 @@ describe("D3 自退冻结：连接不健康时不推进 tickIdle", () => {
 });
 
 describe("D5 重连不刷新帧水位", () => {
-	it("onReconnecting 回调不触碰 lastFrameAt（通过黑洞场景间验证）", async () => {
+	it("onReconnecting 回调不触碰 lastFrameAt（启用判死时验证）", async () => {
 		// 间接验证：start opts 中的 onReconnecting 被调用后，静默期依旧判死（有出站时）
 		vi.useFakeTimers();
+		process.env.PI_FEISHU_FRAME_DEAD = "1";
 		const { keeper, startCalls } = mkKeeper();
 		await keeper.start();
 		const opts = startCalls[0] as { onReconnecting?: () => void };
@@ -118,6 +132,7 @@ describe("D5 重连不刷新帧水位", () => {
 		opts.onReconnecting?.(); // 模拟重连风暴
 		keeper.notifyOutboundOk();
 		expect(keeper.isConnected(t2)).toBe(false); // 仍判死 → 不会被重连回调掩盖
+		delete process.env.PI_FEISHU_FRAME_DEAD;
 	});
 });
 

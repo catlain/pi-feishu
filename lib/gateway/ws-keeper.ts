@@ -56,25 +56,25 @@ export class WsKeeper {
 	}
 
 	/**
-	 * 综合判活（D2：帧水位优先于 SDK 快照）：
-	 * 1. 帧水位判死：>FRAME_DEAD_MS 无入站帧 且 期间有出站成功 → 死（SDK 报什么都没用）
-	 *    双条件防误判：纯静默（无入站也无出站）永不判死。
-	 * 2. 否则看 SDK 官方快照；不可用（旧 SDK）→ 回退旧事件水位。
+	 * 综合判活：
+	 * 1. SDK 官方快照优先（connected/reconnecting/connecting → 健康）。
+	 *    ⚠️ 帧水位判死已禁用（FRAME_DEAD_ENV 环境变量才启用）：出站走 REST、入站走 WS，
+	 *    静默期本就无入站帧，「有出站+无入帧=黑洞」不能成立（2026-08-20 真机误杀循环：
+	 *    每 2 分钟静默重建一次）。WS 协议心跳（ping/pong）SDK 日志层不可见，无可靠判据。
+	 * 2. 快照不可用（旧 SDK）→ 回退事件水位（isWsDead，仅旧 SDK 路径，保持历史行为）。
 	 */
 	isConnected(now: number): boolean {
 		if (this.terminal || !this.ws) return false;
-		// 帧水位优先（事件黑洞时 SDK 永远报 connected，快照不可信）
-		if (now - this.lastFrameAt > FRAME_DEAD_MS) {
-			// 期间有出站成功才判死：证明服务端可达，却收不到帧 → 黑洞
+		// 实验性帧水位判死：仅环境变量 PI_FEISHU_FRAME_DEAD=1 显式启用
+		if (process.env.PI_FEISHU_FRAME_DEAD === "1" && now - this.lastFrameAt > FRAME_DEAD_MS) {
 			const outboundSinceFrame =
 				this.lastOutboundAt !== null && this.lastOutboundAt > this.lastFrameAt;
 			if (outboundSinceFrame) {
 				this.opts.log(
-					`帧水位判死：${Math.round((now - this.lastFrameAt) / 1000)}s 无入站帧（期间有出站成功）→ 重建`,
+					`帧水位判死（实验）：${Math.round((now - this.lastFrameAt) / 1000)}s 无入站帧 → 重建`,
 				);
-					return false;
+				return false;
 			}
-			// 纯静默：不判死，交给 SDK 快照继续判
 		}
 		const statusFn = (this.ws as { getConnectionStatus?: () => { state?: string } })
 			.getConnectionStatus;
