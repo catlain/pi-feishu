@@ -10,6 +10,8 @@ import {
 	pickPrimarySession,
 	readClaims,
 	removeClaim,
+	touchHeartbeat,
+	isAlive,
 	writeClaims,
 } from "../lib/claim";
 
@@ -64,6 +66,47 @@ describe("claim 读写", () => {
 });
 
 describe("claim 仲裁", () => {
+
+	describe("心跳判活", () => {
+		it("heartbeat 距今 <=60s 存活，>60s 离线（边界）", () => {
+			const now = 100_000;
+			expect(isAlive({ sessionId: "s", sessionName: "a", claimedAt: 0, heartbeat: now - 60_000 }, now)).toBe(true);
+			expect(isAlive({ sessionId: "s", sessionName: "a", claimedAt: 0, heartbeat: now - 60_001 }, now)).toBe(false);
+		});
+
+		it("无 heartbeat 字段回退 claimedAt", () => {
+			expect(isAlive({ sessionId: "s", sessionName: "a", claimedAt: Date.now() })).toBe(true);
+			expect(isAlive({ sessionId: "s", sessionName: "a", claimedAt: Date.now() - 61_000 })).toBe(false);
+		});
+	});
+
+	it("touchHeartbeat 原子更新单条，其他条目不变", () => {
+		addClaim("c1", { sessionId: "s1", sessionName: "a", claimedAt: 1, heartbeat: 100 }, claimPath);
+		addClaim("c1", { sessionId: "s2", sessionName: "b", claimedAt: 2, heartbeat: 200 }, claimPath);
+		expect(touchHeartbeat("c1", "s1", claimPath)).toBe(true);
+		const list = getChatClaims("c1", claimPath);
+		expect(list[0]!.heartbeat! > 100).toBe(true);
+		expect(list[1]!.heartbeat).toBe(200);
+		expect(fs.existsSync(claimPath + ".tmp")).toBe(false);
+	});
+
+	it("touchHeartbeat 会话不存在返回 false", () => {
+		expect(touchHeartbeat("cX", "sX", claimPath)).toBe(false);
+		addClaim("c1", { sessionId: "s1", sessionName: "a", claimedAt: 1 }, claimPath);
+		expect(touchHeartbeat("c1", "s9", claimPath)).toBe(false);
+	});
+
+	it("离线会话不被路由匹配（findByName 配合 isAlive）", () => {
+		addClaim("c1", { sessionId: "s1", sessionName: "a", claimedAt: Date.now() - 61_000 }, claimPath);
+		addClaim("c1", { sessionId: "s2", sessionName: "b", claimedAt: 1, heartbeat: Date.now() }, claimPath);
+		const alive = (id: string) => {
+			const e = getChatClaims("c1", claimPath).find((x) => x.sessionId === id)!;
+			return isAlive(e);
+		};
+		expect(findByName("c1", "a", alive, claimPath)).toBeNull();
+		expect(findByName("c1", "b", alive, claimPath)?.sessionId).toBe("s2");
+	});
+
 	it("pickPrimarySession 取最早 claim 且存活", () => {
 		addClaim("c1", { sessionId: "s1", sessionName: "a", claimedAt: 100 }, claimPath);
 		addClaim("c1", { sessionId: "s2", sessionName: "b", claimedAt: 50 }, claimPath);

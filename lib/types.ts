@@ -20,6 +20,8 @@ export interface ClaimEntry {
 	sessionId: string;
 	sessionName: string;
 	claimedAt: number;
+	/** 最近心跳时间戳（30s 一跳；>60s 无更新视为离线）。旧 claim 无此字段时回退 claimedAt */
+	heartbeat?: number;
 }
 
 export type ClaimFile = Record<string, ClaimEntry[]>;

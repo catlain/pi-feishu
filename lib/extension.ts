@@ -1,36 +1,49 @@
 /**
  * 扩展主体 — 状态管理 + 命令/事件注册
- * 逻辑在 handlers.ts / claim.ts / route.ts 等可测模块中。
+ * 会话侧为薄客户端：claim + 心跳 + pending 轮询 + 出站播报。
+ * 入站 WS / 路由全部在网关进程（lib/gateway/main.ts）。
  */
 
 import type { ExtensionFactory, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getFeishuConfig } from "./config";
 import { getCredentials } from "./credentials";
 import { FeishuBridgeClient } from "./client";
-import { addClaim, getChatClaims, removeClaim } from "./claim";
+import {
+	addClaim,
+	getChatClaims,
+	removeClaim,
+	touchHeartbeat,
+	isAlive,
+} from "./claim";
+import { consumePending, clearPending } from "./pending";
 import { generateSessionName } from "./naming";
+import { gatewayOn, gatewayOff, gatewayStatus } from "./gateway/commands";
 import {
 	handleAgentEnd,
 	handleAskUserPrompt,
-	handleInbound,
+	injectFeishuCommand,
 	type HandlerState,
 } from "./handlers";
 
 /** 命令 ctx 的最小结构（notify 类型对齐 SDK：第二参数为字面量联合） */
-type CommandCtx = {
+export type CommandCtx = {
 	ui: { notify: (msg: string, type?: "info" | "error" | "warning") => void };
 };
+
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 2_000;
 
 export const createFeishuExtension: ExtensionFactory = (pi) => {
 	const config = getFeishuConfig(process.cwd());
 	const credentials = getCredentials(config);
 
 	let bridge: FeishuBridgeClient | null = null;
-	let botOpenId: string | null = null;
 	let followed = false;
 	let sessionName = "";
 	let selfSessionId = "";
-	/** 最近一次事件 ctx（isIdle 判断需要；pi 上无 isIdle，参考 pi-intercom 用 ctx.isIdle()） */
+	let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	/** 最近一次事件 ctx（isIdle 判断需要） */
 	let liveCtx: ExtensionContext | null = null;
 
 	const log = (msg: string) => {
@@ -47,14 +60,26 @@ export const createFeishuExtension: ExtensionFactory = (pi) => {
 		},
 		sessionName: () => sessionName,
 		config,
-		botOpenId: () => botOpenId,
+		botOpenId: () => null,
 		liveCtx: () => liveCtx,
 		sendText: async (chatId, text) => bridge?.sendText(chatId, text) ?? null,
 		rawClient: () => bridge?.rawClient() ?? null,
 		active: () => followed && !!bridge,
 	};
 
-	/** 建立 WS 连接并 claim */
+	/** 停止心跳与轮询定时器 */
+	function stopTimers(): void {
+		if (heartbeatTimer) {
+			clearInterval(heartbeatTimer);
+			heartbeatTimer = null;
+		}
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+		}
+	}
+
+	/** claim + 心跳 + pending 轮询（无 WS） */
 	async function followOn(ctx: CommandCtx) {
 		if (!credentials || !config.chatId) {
 			ctx.ui.notify(
@@ -76,29 +101,49 @@ export const createFeishuExtension: ExtensionFactory = (pi) => {
 			sessionId: selfSessionId,
 			sessionName,
 			claimedAt: Date.now(),
+			heartbeat: Date.now(),
 		});
 
-		bridge = new FeishuBridgeClient({
-			credentials,
-			chatId: config.chatId,
-			onEvent: (d) => handleInbound(pi, state, d),
-			logger: log,
-		});
-		await bridge.connect();
-		botOpenId = await bridge.fetchBotOpenId();
+		bridge = new FeishuBridgeClient({ credentials, logger: log });
+		await bridge.ensureClient(); // 出站 REST 客户端初始化
+
+		// 清理上次会话遗留 pending（不注入过期指令）
+		clearPending(selfSessionId);
+
+		// 心跳：30s 更新 claim.heartbeat（事件循环层独立于 AI 回合）
+		heartbeatTimer = setInterval(() => {
+			try {
+				touchHeartbeat(config.chatId, selfSessionId);
+			} catch {
+				// claim 文件瞬时竞态可容忍，下一拍重试
+			}
+		}, HEARTBEAT_INTERVAL_MS);
+
+		// pending 轮询：~2s 读自己的指令文件 → 删 → 本地注入
+		pollTimer = setInterval(() => {
+			try {
+				const pending = consumePending(selfSessionId);
+				if (pending) {
+					injectFeishuCommand(pi, state, pending.command, pending.senderOpenId);
+				}
+			} catch {
+				// 轮询异常不致命
+			}
+		}, POLL_INTERVAL_MS);
+
 		followed = true;
-		ctx.ui.notify(`✅ 飞书已连接，会话名: ${sessionName}`, "info");
+		ctx.ui.notify(`✅ 飞书已 follow（会话名: ${sessionName}），等待网关分发`, "info");
 	}
 
-	/** 释放 claim 并断开 */
+	/** 释放 claim 并停止心跳/轮询 */
 	async function followOff(ctx: CommandCtx) {
 		if (!followed) {
 			ctx.ui.notify("当前未 follow", "info");
 			return;
 		}
 		removeClaim(config.chatId, selfSessionId);
-		await bridge?.disconnect();
-		bridge = null;
+		clearPending(selfSessionId);
+		stopTimers();
 		followed = false;
 		ctx.ui.notify(`已停止 follow（会话名: ${sessionName}）`, "info");
 	}
@@ -124,7 +169,9 @@ export const createFeishuExtension: ExtensionFactory = (pi) => {
 				ctx.ui.notify(
 					`飞书桥状态: ${followed ? "✅ follow 中" : "未 follow"}\n` +
 						`本会话名: ${sessionName || "（未命名）"}\n` +
-						`该群 follow 会话: ${claims.map((e) => e.sessionName).join(", ") || "（无）"}`,
+						`该群 follow 会话:\n${claims
+							.map((e) => `- ${e.sessionName}（${isAlive(e) ? "心跳存活" : "离线"}）`)
+							.join("\n") || "- （无）"}`,
 					"info",
 				);
 			}
@@ -149,7 +196,7 @@ export const createFeishuExtension: ExtensionFactory = (pi) => {
 				return;
 			}
 			if (followed && config.chatId) {
-				// 改名保留原 claimedAt（避免抢占主会话仲裁位）
+				// 改名保留原 claimedAt 与心跳
 				const existing = getChatClaims(config.chatId).find(
 					(e) => e.sessionId === selfSessionId,
 				);
@@ -157,10 +204,22 @@ export const createFeishuExtension: ExtensionFactory = (pi) => {
 					sessionId: selfSessionId,
 					sessionName: name,
 					claimedAt: existing?.claimedAt ?? Date.now(),
+					heartbeat: Date.now(),
 				});
 			}
 			sessionName = name;
 			ctx.ui.notify(`会话名已改为: ${name}`, "info");
+		},
+	});
+
+	// ── 网关生命周期命令（实现在 lib/gateway/commands.ts） ──
+	pi.registerCommand("feishu-gateway", {
+		description: "管理飞书网关进程。用法: /feishu-gateway on|off|status",
+		handler: async (args: string, ctx) => {
+			const sub = args.trim() || "status";
+			if (sub === "on") gatewayOn(ctx, !!credentials);
+			else if (sub === "off") gatewayOff(ctx);
+			else gatewayStatus(ctx, config.chatId ? getChatClaims(config.chatId) : []);
 		},
 	});
 
@@ -177,10 +236,11 @@ export const createFeishuExtension: ExtensionFactory = (pi) => {
 		if (followed) {
 			try {
 				if (config.chatId) removeClaim(config.chatId, selfSessionId);
+				clearPending(selfSessionId);
 			} catch {
 				// ignore
 			}
-			void bridge?.disconnect();
+			stopTimers();
 			followed = false;
 		}
 	});

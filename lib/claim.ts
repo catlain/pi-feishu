@@ -10,6 +10,38 @@ import type { ClaimEntry, ClaimFile } from "./types";
 
 export const CLAIM_DIR = path.join(os.homedir(), ".pi", "agent", "feishu-bridge");
 export const CLAIM_PATH = path.join(CLAIM_DIR, "claim.json");
+export const PENDING_DIR = path.join(CLAIM_DIR, "pending");
+export const GATEWAY_LOCK_PATH = path.join(CLAIM_DIR, "gateway.lock");
+export const GATEWAY_LOG_PATH = path.join(CLAIM_DIR, "gateway.log");
+
+/** 心跳判活：heartbeat 距今超过 TTL（默认 60s）视为离线 */
+export const HEARTBEAT_TTL_MS = 60_000;
+
+export function isAlive(
+	entry: ClaimEntry,
+	now: number = Date.now(),
+	ttl: number = HEARTBEAT_TTL_MS,
+): boolean {
+	const hb = entry.heartbeat ?? entry.claimedAt;
+	return now - hb <= ttl;
+}
+
+/** 原子更新某会话的心跳（读-改-写整文件，tmp+rename） */
+export function touchHeartbeat(
+	chatId: string,
+	sessionId: string,
+	filePath = CLAIM_PATH,
+): boolean {
+	const claims = readClaims(filePath);
+	const list = claims[chatId];
+	if (!list) return false;
+	const idx = list.findIndex((e) => e.sessionId === sessionId);
+	if (idx < 0) return false;
+	list[idx] = { ...list[idx], heartbeat: Date.now() };
+	claims[chatId] = list;
+	writeClaims(claims, filePath);
+	return true;
+}
 
 export function readClaims(filePath = CLAIM_PATH): ClaimFile {
 	try {

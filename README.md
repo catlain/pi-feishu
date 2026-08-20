@@ -9,14 +9,28 @@ pi 会话的飞书"远程驾驶舱"扩展 — 把飞书群变成 pi 会话的播
 - `ask_user_question` 挂起时推送"等待输入"提醒（含问题摘要）
 - 回复超过阈值（默认 2000 字符）时：群里发截断摘要 + 全文写入飞书文档 + 链接回群
 
-### 入站遥控
-- 群里 `@bot <会话名> <指令>` 注入对应 pi 会话（忙时 steer 打断插话，闲时 triggerTurn 触发新回合）
-- `@bot list` 列出当前在线 follow 会话
-- 双闸安全：@bot 提及（mentions 数组匹配）+ open_id 白名单，空名单默认拒绝
+### 入站遥控（网关模式）
+- **独立网关进程**（`pi-feishu-gateway`）持有全机器唯一飞书 WS 长连接，承担全部入站逻辑（解析/双闸校验/路由/list/报错）
+- 群里 `@bot <会话名> <指令>`：网关写入待办文件（`~/.pi/agent/feishu-bridge/pending/<sessionId>.json`），目标会话 ~2s 轮询后注入（忙时 steer 打断插话，闲时 triggerTurn 触发新回合）
+- `@bot list` 由网关直接回复所有心跳存活的 follow 会话
+- 双闸安全（单点执行于网关）：@bot 提及（mentions 数组匹配）+ open_id 白名单，空名单默认拒绝
 
 ### 多会话群控
 - 单 bot + 名字路由：会话名默认取 cwd 目录名，冲突自动加后缀，`/feishu-name` 手改
-- claim 文件仲裁（`~/.pi/agent/feishu-bridge/claim.json`）
+- claim 文件仲裁（`~/.pi/agent/feishu-bridge/claim.json`），会话存活 = 30s 心跳（>60s 无心跳视为离线）
+
+## 架构（网关模式）
+
+```
+飞书群 ──WS──▶ 网关进程（pi-feishu-gateway，唯一 WS 客户端）
+                 │ 解析/@bot 检测/白名单/名字路由（claim 心跳判活）
+                 ├─ list、报错 ──REST──▶ 群
+                 └─ 写 pending/<sessionId>.json
+                                          │ ~2s 轮询
+              各 pi 会话（薄客户端）◀──────┘
+                 ├─ 本地注入（sendMessage + triggerTurn/steer）
+                 └─ 出站播报（agent_end）──REST 直发──▶ 群（不经网关）
+```
 
 ## 安装
 
@@ -52,10 +66,16 @@ pi 会话的飞书"远程驾驶舱"扩展 — 把飞书群变成 pi 会话的播
 
 | 命令 | 说明 |
 |------|------|
-| `/feishu-follow on` | 认领会话：开始播报 + 可被 @bot 路由 |
-| `/feishu-follow off` | 释放会话，断开连接 |
+| `/feishu-follow on` | 认领会话：写 claim（含心跳）+ 出站播报 + 可被网关路由 |
+| `/feishu-follow off` | 释放会话，停止心跳与轮询 |
 | `/feishu-follow status` | 查看绑定状态 |
 | `/feishu-name <名字>` | 修改会话名 |
+| `/feishu-gateway on` | 启动网关进程（唯一 WS；已运行则提示 PID） |
+| `/feishu-gateway off` | 停止网关进程并清锁（出站播报不受影响） |
+| `/feishu-gateway status` | 网关运行状态 + claim 会话心跳概览 |
+
+> 使用顺序：先 `/feishu-gateway on`，再各会话 `/feishu-follow on`。网关未运行时入站无响应，出站正常。
+> 网关空闲自退：连续 10 分钟无任何存活心跳 → 群播报后自动退出（启动前 10 分钟为宽限期）。日志：`~/.pi/agent/feishu-bridge/gateway.log`。
 
 ## 飞书应用前置
 
