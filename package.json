@@ -1,5 +1,5 @@
 {
-	"name": "pi-feishu",
+	"name": "pi-ate-feishu",
 	"version": "0.1.0",
 	"description": "Feishu (Lark) bridge extension for pi-coding-agent — outbound broadcast + inbound remote control",
 	"main": "index.ts",

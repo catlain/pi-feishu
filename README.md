@@ -1,4 +1,6 @@
-# pi-feishu
+# pi-ate-feishu
+
+> 📖 **[pi-atelier 实战指南](https://catlain.github.io/pi-atelier/)** — 从零教会你使用 pi-atelier 扩展生态，包含完整示例和最佳实践。
 
 pi 会话的飞书"远程驾驶舱"扩展 — 把飞书群变成 pi 会话的播报与遥控入口。
 
@@ -37,7 +39,7 @@ pi 会话的飞书"远程驾驶舱"扩展 — 把飞书群变成 pi 会话的播
 ```jsonc
 // ~/.pi/agent/settings.json
 {
-  "packages": ["pi-feishu"]
+  "packages": ["pi-ate-feishu"]
 }
 ```
 

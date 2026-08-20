@@ -1,4 +1,4 @@
-# pi-feishu (English)
+# pi-ate-feishu (English)
 
 A Feishu (Lark) "remote cockpit" extension for pi sessions — turn a Feishu group into a broadcast and remote-control entry point for your pi sessions.
 
@@ -23,7 +23,7 @@ A Feishu (Lark) "remote cockpit" extension for pi sessions — turn a Feishu gro
 ```jsonc
 // ~/.pi/agent/settings.json
 {
-  "packages": ["pi-feishu"]
+  "packages": ["pi-ate-feishu"]
 }
 ```
 
