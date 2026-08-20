@@ -18,7 +18,7 @@ import { readClaims, isAlive, GATEWAY_LOG_PATH } from "../claim";
 import { writePending as writePendingFile } from "../pending";
 import { parseInboundEvent } from "../events";
 import { gatewayRoute } from "./route";
-import { writeLock, clearLock, initIdleState, tickIdle } from "./lifecycle";
+import { readLock, writeLock, clearLock, initIdleState, tickIdle, isProcessAlive } from "./lifecycle";
 import { WsKeeper } from "./ws-keeper";
 import { createSdkLogger, noopStdio } from "./stdio";
 import type { FeishuMessageEvent } from "../types";
@@ -46,6 +46,13 @@ async function main(): Promise<void> {
 	const credentials = getCredentials(config);
 	if (!credentials || !config.chatId) {
 		log("启动失败：缺少凭证（feishu section / FEISHU_APP_ID/SECRET）或 chatId");
+		process.exit(1);
+	}
+
+	// 单实例护栏：已有活网关则拒绝启动，避免双进程互踢 WS + 锁覆盖导致旧进程失联
+	const lock = readLock();
+	if (lock && isProcessAlive(lock.pid)) {
+		log(`已有网关在运行（PID ${lock.pid}），拒绝启动`);
 		process.exit(1);
 	}
 
