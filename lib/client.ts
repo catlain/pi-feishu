@@ -102,19 +102,15 @@ export class FeishuBridgeClient {
 		return this.client;
 	}
 
-	/** 获取 bot 自身 open_id（mentions 匹配用）。SDK 无 bot.info 封装，直接 HTTP 调 /bot/v3/info */
+	/** 获取 bot 自身 open_id（mentions 匹配用）。SDK 无公开 bot.info 封装，用 request 对象形式调 /bot/v3/info */
 	async fetchBotOpenId(): Promise<string | null> {
 		if (!this.client) return null;
 		try {
-			// 取 tenant_access_token（复用 SDK 内部 token，可通过 auth API 直接拿）
-			const token = await (this.client as unknown as { tenantAccessTokenManager?: { getToken: () => Promise<string> } })
-				.tenantAccessTokenManager?.getToken();
-			if (!token) return null;
-			const res = await fetch("https://open.feishu.cn/open-apis/bot/v3/info", {
-				headers: { Authorization: `Bearer ${token}` },
-			});
-			const json = (await res.json()) as { data?: { bot?: { open_id?: string } } };
-			return json?.data?.bot?.open_id ?? null;
+			const res = (await this.client.request({
+				url: "/open-apis/bot/v3/info",
+				method: "GET",
+			} as never)) as { bot?: { open_id?: string } };
+			return res?.bot?.open_id ?? null;
 		} catch {
 			return null;
 		}
