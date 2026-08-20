@@ -20,6 +20,7 @@ import { parseInboundEvent } from "../events";
 import { gatewayRoute } from "./route";
 import { writeLock, clearLock, initIdleState, tickIdle } from "./lifecycle";
 import { WsKeeper } from "./ws-keeper";
+import { createSdkLogger, noopStdio } from "./stdio";
 import type { FeishuMessageEvent } from "../types";
 
 const SCAN_INTERVAL_MS = 30_000;
@@ -30,6 +31,10 @@ const logStream = fs.createWriteStream(GATEWAY_LOG_PATH, { flags: "w" });
 function log(msg: string): void {
 	logStream.write(`[${new Date().toISOString()}] ${msg}\n`);
 }
+
+// stdio 隔离：任何 console 写入不再触死管道（EPIPE 根治）
+noopStdio();
+
 
 function shutdown(code: number): void {
 	logStream.end();
@@ -117,6 +122,8 @@ async function main(): Promise<void> {
 		reply,
 		log,
 		exit: (code) => shutdown(code),
+		// SDK logger 注入文件流，SDK 日志不再写 console
+		logger: createSdkLogger((line) => logStream.write(`${line}\n`)),
 	});
 	await keeper.start();
 	keeper.startReconnectLoop(() => shutdown(1));

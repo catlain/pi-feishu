@@ -15,6 +15,7 @@ import {
 	clearLock,
 	type ReconnectState,
 } from "./lifecycle";
+import type { SdkLogger } from "./stdio";
 
 export interface WsKeeperOptions {
 	credentials: { appId: string; appSecret: string };
@@ -23,6 +24,8 @@ export interface WsKeeperOptions {
 	log: (msg: string) => void;
 	/** 熔断收尾（清锁+退出） */
 	exit: (code: number) => void;
+	/** 注入 SDK 的文件流 logger（EPIPE 根治） */
+	logger?: SdkLogger;
 }
 
 export class WsKeeper {
@@ -43,9 +46,28 @@ export class WsKeeper {
 		this.opts = opts;
 	}
 
-	/** 综合判活：未 terminal + SDK client 存在 + 事件水位 */
+	/**
+	 * 综合判活：优先轮询 SDK 官方快照 getConnectionStatus()。
+	 * - connected / reconnecting / connecting → 健康（reconnecting 是 SDK 自愈中，不干预）
+	 * - failed（onError terminal）或异常 idle → 不健康（走退避状态机整体重建）
+	 * - getConnectionStatus 不可用（旧 SDK）→ 回退事件水位判活（isWsDead）
+	 */
 	isConnected(now: number): boolean {
 		if (this.terminal || !this.ws) return false;
+		const statusFn = (this.ws as { getConnectionStatus?: () => { state?: string } })
+			.getConnectionStatus;
+		if (typeof statusFn === "function") {
+			try {
+				const state = statusFn.call(this.ws)?.state;
+				if (state === "connected" || state === "reconnecting" || state === "connecting") {
+					return true;
+				}
+				// failed / idle / 未知 → 视为不健康，交退避状态机决定是否重建
+				return false;
+			} catch {
+				// 快照读取异常 → 回退水位
+			}
+		}
 		return !isWsDead(this.lastEventAt, now);
 	}
 
@@ -72,6 +94,7 @@ export class WsKeeper {
 		this.ws = new this.sdk.WSClient({
 			appId: this.opts.credentials.appId,
 			appSecret: this.opts.credentials.appSecret,
+			...(this.opts.logger ? { logger: this.opts.logger } : {}),
 		});
 		await this.ws.start({
 			eventDispatcher: dispatcher as unknown as EventDispatcher,
@@ -88,7 +111,7 @@ export class WsKeeper {
 			onReconnected: () => {
 				this.lastEventAt = Date.now();
 				this.opts.log("SDK 重连成功");
-				void this.opts.reply("[pi] 网关连接已恢复");
+				void this.opts.reply("[pi] 网关连接已恢复（期间指令若有丢失请重发）");
 			},
 		} as never);
 		this.hadConnectedOnce = true;
@@ -105,7 +128,7 @@ export class WsKeeper {
 
 				if (connected && this.reconnect.deadSince !== null) {
 					this.opts.log("WS 连接已恢复（整体重启成功）");
-					void this.opts.reply("[pi] 网关连接已恢复");
+					void this.opts.reply("[pi] 网关连接已恢复（期间指令若有丢失请重发）");
 				}
 
 				const rc = tickReconnect(this.reconnect, connected, now);
