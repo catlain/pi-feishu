@@ -171,22 +171,23 @@ describe("gatewayRoute 网关路由", () => {
 		expect(pending[0]?.command).toBe("（空指令，请继续）");
 	});
 
-	it("answer 指令写入 ask-user-answer pending（含编号）", () => {
+	it("answer 指令写入 ask-user-answer pending（含编号，双写 answerSpec/answerIndex）", () => {
 		const pending: Array<Record<string, unknown>> = [];
 		const replies: string[] = [];
 		const a = gatewayRoute(
 			{
 				claims: mkClaims(),
 				whitelist: ["ou_ok"],
-				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				writePending: (_sid, d) => pending.push(d as unknown as Record<string, unknown>),
 				reply: (t) => replies.push(t),
 			},
 			{ ...base, text: "alpha answer 2" },
 		);
 		expect(a).toBe("routed");
 		expect(pending[0]?.kind).toBe("ask-user-answer");
+		expect(pending[0]?.answerSpec).toBe("2");
 		expect(pending[0]?.answerIndex).toBe(2);
-		expect(replies[0]).toContain("代答选项 2");
+		expect(replies[0]).toContain("代答 2");
 	});
 
 	it("awr 简写指令等价代答", () => {
@@ -195,7 +196,7 @@ describe("gatewayRoute 网关路由", () => {
 			{
 				claims: mkClaims(),
 				whitelist: ["ou_ok"],
-				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				writePending: (_sid, d) => pending.push(d as unknown as Record<string, unknown>),
 				reply: () => {},
 			},
 			{ ...base, text: "alpha awr 2" },
@@ -209,7 +210,7 @@ describe("gatewayRoute 网关路由", () => {
 			{
 				claims: mkClaims(),
 				whitelist: ["ou_ok"],
-				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				writePending: (_sid, d) => pending.push(d as unknown as Record<string, unknown>),
 				reply: () => {},
 			},
 			{ ...base, text: "alpha 2" },
@@ -217,18 +218,20 @@ describe("gatewayRoute 网关路由", () => {
 		expect(pending[0]?.kind).toBeUndefined();
 	});
 
-	it("awr 后缀多余文本仍走普通指令", () => {
+	it("多题/多选/自定义语法捕获为 answerSpec（非单数字不双写 answerIndex）", () => {
 		const pending: Array<Record<string, unknown>> = [];
 		gatewayRoute(
 			{
 				claims: mkClaims(),
-					whitelist: ["ou_ok"],
-				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				whitelist: ["ou_ok"],
+				writePending: (_sid, d) => pending.push(d as unknown as Record<string, unknown>),
 				reply: () => {},
 			},
-			{ ...base, text: "alpha awr 2 谢谢" },
+			{ ...base, text: "alpha awr 2,1|3,=停机再改" },
 		);
-		expect(pending[0]?.kind).toBeUndefined();
+		expect(pending[0]?.kind).toBe("ask-user-answer");
+		expect(pending[0]?.answerSpec).toBe("2,1|3,=停机再改");
+		expect(pending[0]?.answerIndex).toBeUndefined();
 	});
 
 	it("中文代答指令等价", () => {
@@ -237,7 +240,7 @@ describe("gatewayRoute 网关路由", () => {
 			{
 				claims: mkClaims(),
 				whitelist: ["ou_ok"],
-				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				writePending: (_sid, d) => pending.push(d as unknown as Record<string, unknown>),
 				reply: () => {},
 			},
 			{ ...base, text: "alpha 代答 1" },
@@ -245,17 +248,19 @@ describe("gatewayRoute 网关路由", () => {
 		expect(pending[0]?.answerIndex).toBe(1);
 	});
 
-	it("answer 后缀多余文本走普通指令", () => {
+	it("awr 后缀多余文本也走代答通道（answerSpec 原样捕获，消费侧报错纠正）", () => {
 		const pending: Array<Record<string, unknown>> = [];
 		gatewayRoute(
 			{
 				claims: mkClaims(),
 				whitelist: ["ou_ok"],
-				writePending: (_sid, d) => pending.push(d as Record<string, unknown>),
+				writePending: (_sid, d) => pending.push(d as unknown as Record<string, unknown>),
 				reply: () => {},
 			},
 			{ ...base, text: "alpha answer 2 谢谢" },
 		);
-		expect(pending[0]?.kind).toBeUndefined();
+		expect(pending[0]?.kind).toBe("ask-user-answer");
+		expect(pending[0]?.answerSpec).toBe("2 谢谢");
+		expect(pending[0]?.answerIndex).toBeUndefined();
 	});
 });

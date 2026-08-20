@@ -182,7 +182,7 @@ export class WsKeeper {
 				this.lastEventAt = Date.now();
 				this.lastFrameAt = Date.now(); // 真恢复：刷新帧水位
 				this.opts.log("SDK 重连成功");
-				void this.opts.reply("[pi] 网关连接已恢复（期间指令若有丢失请重发）");
+				void this.opts.reply("[pi] 网关连接已恢复（期间指令若有丢失请重发；刚恢复后约 1 分钟内发送的指令可能被丢弃，若未响应请稍候重发）");
 			},
 		} as never);
 		this.hadConnectedOnce = true;
@@ -191,7 +191,7 @@ export class WsKeeper {
 		this.opts.log("WS 长连接已建立（全机器唯一客户端，SDK 内置重连 + 水位兜底）");
 		// 启动就绪播报：飞书服务端切到新连接有过渡期（实测约 1 分钟内，期间事件丢弃不重投），
 		// 群里收到本条即代表可正常遥控
-		void this.opts.reply("[pi] 网关已就绪");
+		void this.opts.reply("[pi] 网关已就绪（约 1 分钟内发送的指令可能被丢弃，若未响应请重发）");
 	}
 
 	/** 启动兜底扫描循环（30s）：SDK terminal 或水位死亡时整体重建；持续失败 30 分钟熔断 */
@@ -203,7 +203,7 @@ export class WsKeeper {
 
 				if (connected && this.reconnect.deadSince !== null) {
 					this.opts.log("WS 连接已恢复（整体重启成功）");
-					void this.opts.reply("[pi] 网关连接已恢复（期间指令若有丢失请重发）");
+					void this.opts.reply("[pi] 网关连接已恢复（期间指令若有丢失请重发；刚恢复后约 1 分钟内发送的指令可能被丢弃，若未响应请稍候重发）");
 				}
 
 				const rc = tickReconnect(this.reconnect, connected, now);

@@ -55,18 +55,21 @@ export function gatewayRoute(
 				);
 				return "not_found_reply";
 			}
-			// awr 代答在引用路由下同样直达（D5）
-			const answerMatch = /^(?:awr|answer|代答)\s+(\d+)$/.exec(text);
+			// awr 代答在引用路由下同样直达（D5）；扩展语法：awr <答案串>（多题逗号、多选|、自定义=）
+			const answerMatch = /^(?:awr|answer|代答)\s+(.+)$/.exec(text);
 			if (answerMatch) {
+				const answerSpec = answerMatch[1].trim();
 				deps.writePending(anchorSid, {
 					command: text,
 					senderOpenId: parsed.senderOpenId ?? "unknown",
 					arrivedAt: now,
 					id: `pf-${now}-${Math.random().toString(36).slice(2, 8)}`,
 					kind: "ask-user-answer",
-					answerIndex: Number(answerMatch[1]),
+					answerSpec,
+					// 单数字旧格式双写 answerIndex（过渡期兼容，读迁移即删）
+					...( /^\d+$/.test(answerSpec) ? { answerIndex: Number(answerSpec) } : {} ),
 				});
-				deps.reply(`已转交 ${target.sessionName} 代答选项 ${answerMatch[1]}`, anchorSid);
+				deps.reply(`已转交 ${target.sessionName} 代答 ${answerSpec}`, anchorSid);
 				return "routed";
 			}
 			deps.writePending(anchorSid, {
@@ -119,18 +122,22 @@ export function gatewayRoute(
 		return "not_found_reply";
 	}
 
-	// awr <编号> / answer <编号> / 代答 <编号>：ask-user 问卷代答（会话侧程序化回填，不注入文本）
-	const answerMatch = /^(?:awr|answer|代答)\s+(\d+)$/.exec(cmd.command);
+	// awr <答案串> / answer <答案串> / 代答 <答案串>：ask-user 问卷代答（会话侧程序化回填，不注入文本）
+	// 答案串按题序逗号分隔：单选=选项号；多选=N|M；自定义==文本；单数字向后兼容旧语法
+	const answerMatch = /^(?:awr|answer|代答)\s+(.+)$/.exec(cmd.command);
 	if (answerMatch) {
+		const answerSpec = answerMatch[1].trim();
 		deps.writePending(target.sessionId, {
 			command: cmd.command,
 			senderOpenId: parsed.senderOpenId ?? "unknown",
 			arrivedAt: now,
 			id: `pf-${now}-${Math.random().toString(36).slice(2, 8)}`,
 			kind: "ask-user-answer",
-			answerIndex: Number(answerMatch[1]),
+			answerSpec,
+			// 单数字旧格式双写 answerIndex（过渡期兼容，读迁移即删）
+			...( /^\d+$/.test(answerSpec) ? { answerIndex: Number(answerSpec) } : {} ),
 		});
-		deps.reply(`已转交 ${target.sessionName} 代答选项 ${answerMatch[1]}`);
+		deps.reply(`已转交 ${target.sessionName} 代答 ${answerSpec}`);
 		return "routed";
 	}
 

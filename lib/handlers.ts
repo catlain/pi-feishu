@@ -12,6 +12,7 @@ import {
 	type AskPromptQuestion,
 } from "./broadcast";
 import { appendOutbox } from "./outbox";
+import { parseAnswerSpec, type AnswerSpecItem, type AnswerSpecQuestion } from "./answer-spec";
 
 /** isIdle 安全调用（ctx 可能随会话销毁失效） */
 export function safeIsIdle(ctx: unknown): boolean {
@@ -116,9 +117,9 @@ export function handleAskUserPrompt(
 
 /** fork 包在 globalThis 上注册的 API 入口（无依赖消费） */
 function askUserApi(): {
-	getActiveAskParams: () => { questions?: Array<{ question?: string; options?: Array<{ label: string }> }> } | null;
+	getActiveAskParams: () => { questions?: AnswerSpecQuestion[] } | null;
 	submitAskUserAnswer: (r: {
-		answers: Array<{ questionIndex: number; question?: string; kind: "option"; answer: string }>;
+		answers: AnswerSpecItem[];
 		cancelled: boolean;
 	}) => boolean;
 } | null {
@@ -128,10 +129,11 @@ function askUserApi(): {
 	);
 }
 
-/** 消费 ask-user-answer pending：程序化回填问卷（幂等失败 → 播报过期） */
+/** 消费 ask-user-answer pending：程序化回填问卷（幂等失败 → 播报过期）。
+ * answerSpec 支持多题（逗号分隔）、多选（|）、自定义（=文本），单数字向后兼容。 */
 export async function consumeAskUserAnswer(
 	state: HandlerState,
-	answerIndex: number,
+	answerSpec: string,
 	senderOpenId: string,
 	logger?: (msg: string) => void,
 ): Promise<void> {
@@ -150,25 +152,18 @@ export async function consumeAskUserAnswer(
 		reply("问卷已答复或已过期");
 		return;
 	}
-	if (params.questions.length > 1) {
-		reply("⚠️ 多题问卷暂不支持飞书代答，请回终端操作");
+	const questions = params.questions;
+	const parsed = parseAnswerSpec(answerSpec, questions);
+	if (typeof parsed === "string") {
+		reply(parsed);
 		return;
 	}
-	const q = params.questions[0]!;
-	const opt = q.options?.[answerIndex - 1];
-	if (!q.options?.length || !opt) {
-		reply(`编号 ${answerIndex} 无效，请对照提醒消息中的编号回复`);
-		return;
-	}
-	const ok = api.submitAskUserAnswer({
-		answers: [{ questionIndex: 0, question: q.question, kind: "option", answer: opt.label }],
-		cancelled: false,
-	});
+	const ok = api.submitAskUserAnswer({ answers: parsed, cancelled: false });
 	if (ok) {
 		logger?.(
-			`[pi-feishu] ask-user 已由 ${senderOpenId.slice(0, 10)}… 代答: ${answerIndex}. ${opt.label}`,
+			`[pi-feishu] ask-user 已由 ${senderOpenId.slice(0, 10)}… 代答: ${answerSpec}`,
 		);
-		reply(`✅ 已代答: ${answerIndex}. ${opt.label}`);
+		reply(`✅ 已代答: ${answerSpec}`);
 	} else {
 		reply("问卷已答复或已过期");
 	}

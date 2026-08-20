@@ -7,16 +7,31 @@ import type { PendingCommand } from "../lib/pending";
 const API = Symbol.for("@pi-atelier/rpiv-ask-user/api");
 
 type Questionnaire = {
-	questions: Array<{ question?: string; header?: string; options?: Array<{ label: string; description?: string }> }>;
+	questions: Array<{
+		question?: string;
+		header?: string;
+		multiSelect?: boolean;
+		options?: Array<{ label: string; description?: string }>;
+	}>;
 };
-type Answer = { answers: Array<{ questionIndex: number; question?: string; kind: "option"; answer: string }>; cancelled: boolean };
+type Answer = {
+	answers: Array<{
+		questionIndex: number;
+		question?: string;
+		kind: "option" | "custom" | "multi";
+		answer?: string | null;
+		selected?: string[];
+	}>;
+	cancelled: boolean;
+};
 
-function installApi(params: Questionnaire | null, resolve: (ok: boolean) => void = () => {}) {
+function installApi(params: Questionnaire | null, resolve: (ok: boolean) => void = () => {}, capture?: (a: Answer) => void) {
 	const store = globalThis as Record<symbol, unknown>;
 	store[API] = {
 		getActiveAskParams: () => params,
 		submitAskUserAnswer: (r: Answer) => {
 			if (!params) return false;
+			capture?.(r);
 			resolve(true);
 			return true;
 		},
@@ -39,7 +54,7 @@ function mkState() {
 		},
 		active: () => true,
 		liveCtx: () => ({ isIdle: () => true }),
-	} as never;
+	} as unknown as import("../lib/handlers").HandlerState & { sent: string[] };
 }
 
 const singleQ: Questionnaire = {
@@ -55,6 +70,25 @@ const singleQ: Questionnaire = {
 	],
 };
 
+// 3 题混合问卷：单选 + 多选 + 单选（末题可作自定义）
+const mixed3Q: Questionnaire = {
+	questions: [
+		{
+			question: "用哪个库？",
+			options: [{ label: "libA" }, { label: "libB" }, { label: "libC" }],
+		},
+		{
+			question: "启用哪些功能？",
+			multiSelect: true,
+			options: [{ label: "x" }, { label: "y" }, { label: "z" }],
+		},
+		{
+			question: "端口？",
+			options: [{ label: "80" }, { label: "443" }],
+		},
+	],
+};
+
 afterEach(() => {
 	clearApi();
 });
@@ -62,74 +96,62 @@ afterEach(() => {
 describe("consumeAskUserAnswer", () => {
 	it("无全局入口（fork 未安装）→ 播报过期", async () => {
 		const st = mkState();
-		await consumeAskUserAnswer(st, 1, "ou_x");
+		await consumeAskUserAnswer(st, "1", "ou_x");
 		expect(st.sent[0]).toContain("问卷已答复或已过期");
 	});
 
 	it("无活跃问卷 → 播报过期", async () => {
 		const st = mkState();
 		installApi(null);
-		await consumeAskUserAnswer(st, 1, "ou_x");
+		await consumeAskUserAnswer(st, "1", "ou_x");
 		expect(st.sent[0]).toContain("问卷已答复或已过期");
 	});
 
-	it("有效编号 → 代答成功并播报", async () => {
+	it("单题旧语法编号 → 代答成功并播报", async () => {
 		const st = mkState();
-		let resolved = false;
-		installApi(singleQ, (ok) => {
-			resolved = ok;
-		});
-		await consumeAskUserAnswer(st, 2, "ou_x");
-		expect(st.sent[0]).toContain("已代答: 2. B");
-		expect(resolved).toBe(true);
+		let captured: Answer | undefined;
+		installApi(singleQ, () => {}, (a) => (captured = a));
+		await consumeAskUserAnswer(st, "2", "ou_x");
+		expect(st.sent[0]).toContain("已代答: 2");
+		expect(captured!.answers[0]).toEqual({ questionIndex: 0, question: "用哪个方案？", kind: "option", answer: "B" });
 	});
 
 	it("编号越界 → 提示无效", async () => {
 		const st = mkState();
 		installApi(singleQ);
-		await consumeAskUserAnswer(st, 9, "ou_x");
+		await consumeAskUserAnswer(st, "9", "ou_x");
 		expect(st.sent[0]).toContain("编号 9 无效");
 	});
 
-	it("多题问卷 → 提示回终端", async () => {
+	it("多题问卷 → 代答成功（不再拒绝）", async () => {
 		const st = mkState();
-		installApi({ questions: [...singleQ.questions, { question: "再问?", options: [{ label: "是" }] }] });
-		await consumeAskUserAnswer(st, 1, "ou_x");
-		expect(st.sent[0]).toContain("多题问卷暂不支持");
-	});
-});
-
-describe("dispatchPending", () => {
-	it("kind=ask-user-answer 走代答通道（不注入文本）", async () => {
-		const st = mkState();
-		let resolved = false;
-		installApi(singleQ, () => {
-			resolved = true;
+		let captured: Answer | undefined;
+		installApi(mixed3Q, () => {}, (a) => (captured = a));
+		await consumeAskUserAnswer(st, "2,1|3,=8080", "ou_x");
+		expect(st.sent[0]).toContain("已代答: 2,1|3,=8080");
+		expect(captured!.answers).toHaveLength(3);
+		expect(captured!.answers[1]).toEqual({
+			questionIndex: 1,
+			question: "启用哪些功能？",
+			kind: "multi",
+			selected: ["x", "z"],
+			answer: null,
 		});
-		const pending: PendingCommand = {
-			command: "answer 1",
-			senderOpenId: "ou_x",
-			arrivedAt: Date.now(),
-			id: "pf-1",
-			kind: "ask-user-answer",
-			answerIndex: 1,
-		};
-		const pi = { sendMessage: () => { throw new Error("不应注入文本"); } };
-		dispatchPending(pi as never, st, pending, () => {});
-		await new Promise((r) => setTimeout(r, 10));
-		expect(resolved).toBe(true);
-		expect(st.sent[0]).toContain("已代答: 1. A");
+		expect(captured!.answers[2]).toEqual({
+			questionIndex: 2,
+			question: "端口？",
+			kind: "custom",
+			answer: "8080",
+		});
 	});
 
-	it("普通指令走文本注入", () => {
-		const sent: unknown[] = [];
-		const pi = { sendMessage: (msg: unknown) => sent.push(msg) };
-		dispatchPending(pi as never, mkState(), {
-			command: "跑回测",
-			senderOpenId: "ou_x",
-			arrivedAt: Date.now(),
-			id: "pf-2",
-		}, () => {});
-		expect(sent).toHaveLength(1);
+	it("多题错误段 → 逐题错误提示，问卷保持等待", async () => {
+		const st = mkState();
+		let submitted = false;
+		installApi(mixed3Q, () => {}, () => (submitted = true));
+		await consumeAskUserAnswer(st, "2,9,=8080", "ou_x");
+		expect(st.sent[0]).toContain("问题2 编号 9 无效，共 3 个选项");
+		expect(submitted).toBe(false);
 	});
 });
+

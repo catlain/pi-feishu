@@ -15,7 +15,9 @@ export function dispatchPending(
 	log: (msg: string) => void,
 ): void {
 	if (pending.kind === "ask-user-answer") {
-		void consumeAskUserAnswer(state, pending.answerIndex ?? 0, pending.senderOpenId, log);
+		// 双读：answerSpec（新，多题/多选/自定义）优先，answerIndex（旧单题）兼容
+		const spec = pending.answerSpec ?? (pending.answerIndex !== undefined ? String(pending.answerIndex) : "");
+		void consumeAskUserAnswer(state, spec, pending.senderOpenId, log);
 	} else {
 		injectFeishuCommand(pi, state, pending.command, pending.senderOpenId);
 	}

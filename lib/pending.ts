@@ -21,7 +21,9 @@ export interface PendingCommand {
 	id: string;
 	/** 指令种类：普通注入文本 / ask-user 问卷代答 */
 	kind?: "command" | "ask-user-answer";
-	/** kind=ask-user-answer 时：选项编号（1-based，写入前已验证） */
+	/** kind=ask-user-answer 时：答案串（按题序逗号分隔，如 "2,1|3,=文本"；解析在消费侧） */
+	answerSpec?: string;
+	/** @deprecated 旧单题编号（1-based）。answerSpec 迁移完成后删除（dispatch 双读过渡） */
 	answerIndex?: number;
 }
 

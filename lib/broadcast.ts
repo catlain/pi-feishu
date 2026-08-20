@@ -97,15 +97,25 @@ export function buildAskWaitingBody(
 		}
 		lines.push(`回复 @bot ${sessionName} awr <编号> 选择`);
 	} else {
+		// 多题：逐题编号 + 题型标注 + 选项 N.M + 应答示例（feishu-ask-multi-answer）
+		const example: string[] = [];
 		for (let qi = 0; qi < questions.length; qi++) {
 			const q = questions[qi];
 			if (!q.question) continue;
-			lines.push(`问题${qi + 1}: ${q.question.slice(0, 60)}`);
-			for (let i = 0; i < (q.options?.length ?? 0); i++) {
-				lines.push(`  ${qi + 1}.${i + 1} ${q.options![i]!.label}`);
+			const type = q.multiSelect ? "多选" : "单选";
+			lines.push(`${qi + 1}. [${type}] ${q.question.slice(0, 60)}`);
+			const labels = (q.options ?? []).map((o) => o.label);
+			if (labels.length > 0) {
+				lines.push(`  ${labels.map((l, i) => `${qi + 1}.${i + 1} ${l}`).join("  ")}`);
+				example.push(q.multiSelect && labels.length > 1 ? `${qi + 1}.1|${qi + 1}.2` : `${qi + 1}.1`);
+			} else {
+				lines.push(`  ${qi + 1}.（无选项，自由输入）`);
+				example.push(`=文本`);
 			}
 		}
-		lines.push("⚠️ 多题暂不支持飞书应答，请回终端操作");
+		lines.push(
+			`回复 @bot ${sessionName} awr ${example.join(",")}（按题序逗号分隔，多选|，自定义=开头）`,
+		);
 	}
 	return lines.join("\n");
 }

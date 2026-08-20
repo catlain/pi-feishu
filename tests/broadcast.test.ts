@@ -97,14 +97,34 @@ describe("播报（outbox 出站）", () => {
 			expect(body).toContain("回复 @bot catlain awr <编号> 选择");
 		});
 
-		it("多题提示回终端操作", () => {
+		it("多题播报：题型标注 + 选项 N.M + 示例行（不再提示回终端）", () => {
 			const body = buildAskWaitingBody("catlain", [
 				...singleQ,
 				{ question: "确认吗？", options: [{ label: "是" }] },
 			]);
-			expect(body).toContain("问题2: 确认吗？");
-			expect(body).toContain("多题暂不支持飞书应答");
-			expect(body).not.toContain("answer");
+			expect(body).toContain("1. [单选] 用哪个方案？");
+			expect(body).toContain("2. [单选] 确认吗？");
+			expect(body).toContain("2.1 是");
+			expect(body).toContain("awr 1.1,2.1");
+			expect(body).toContain("按题序逗号分隔，多选|，自定义=开头");
+			expect(body).not.toContain("多题暂不支持");
+		});
+
+		it("多题播报快照：单选+多选混合含多选标注与|示例", () => {
+			const body = buildAskWaitingBody("catlain", [
+				{ question: "用哪个库？", options: [{ label: "A" }, { label: "B" }] },
+				{ question: "启用哪些？", multiSelect: true, options: [{ label: "x" }, { label: "y" }, { label: "z" }] },
+			]);
+			expect(body).toBe(
+				[
+					"用哪个库？",
+					"1. [单选] 用哪个库？",
+					"  1.1 A  1.2 B",
+					"2. [多选] 启用哪些？",
+					"  2.1 x  2.2 y  2.3 z",
+					"回复 @bot catlain awr 1.1,2.1|2.2（按题序逗号分隔，多选|，自定义=开头）",
+				].join("\n"),
+			);
 		});
 
 		it("无选项时回退摘要", () => {
