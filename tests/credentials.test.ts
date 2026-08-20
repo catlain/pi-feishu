@@ -3,20 +3,24 @@ import { getCredentials } from "../lib/credentials";
 import type { FeishuConfig } from "../lib/types";
 
 describe("凭证读取", () => {
-	it("环境变量优先", () => {
+	it("settings feishu section 为主配置方式（优先于环境变量）", () => {
 		process.env.FEISHU_APP_ID = "env_id";
 		process.env.FEISHU_APP_SECRET = "env_secret";
 		const r = getCredentials({ appId: "cfg_id", appSecret: "cfg_secret" } as FeishuConfig);
-		expect(r).toEqual({ appId: "env_id", appSecret: "env_secret" });
+		expect(r).toEqual({ appId: "cfg_id", appSecret: "cfg_secret" });
 		delete process.env.FEISHU_APP_ID;
 		delete process.env.FEISHU_APP_SECRET;
 	});
 
-	it("无环境变量时兜底 settings feishu section", () => {
+	it("环境变量作为兼容兜底", () => {
 		delete process.env.FEISHU_APP_ID;
 		delete process.env.FEISHU_APP_SECRET;
-		const r = getCredentials({ appId: "cfg_id", appSecret: "cfg_secret" } as FeishuConfig);
-		expect(r).toEqual({ appId: "cfg_id", appSecret: "cfg_secret" });
+		process.env.FEISHU_APP_ID = "env_id";
+		process.env.FEISHU_APP_SECRET = "env_secret";
+		const r = getCredentials({} as FeishuConfig);
+		expect(r).toEqual({ appId: "env_id", appSecret: "env_secret" });
+		delete process.env.FEISHU_APP_ID;
+		delete process.env.FEISHU_APP_SECRET;
 	});
 
 	it("两处都缺失返回 null（静默降级）", () => {

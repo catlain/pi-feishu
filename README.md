@@ -34,6 +34,8 @@ pi 会话的飞书"远程驾驶舱"扩展 — 把飞书群变成 pi 会话的播
 {
   "feishu": {
     "chatId": "oc_xxx",              // 目标群 chat_id
+    "appId": "cli_xxx",              // 飞书自建应用凭证（主配置方式）
+    "appSecret": "xxx",
     "whitelist": ["ou_xxx"],         // 允许遥控的 open_id，空 = 全拒绝
     "truncateThreshold": 2000,       // 长回复截断阈值
     "sessionName": "my-session"      // 可选：会话名覆盖
@@ -41,14 +43,10 @@ pi 会话的飞书"远程驾驶舱"扩展 — 把飞书群变成 pi 会话的播
 }
 ```
 
-凭据通过环境变量传入（不入库）：
+> 凭证兼容环境变量 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`（优先级低于 settings 配置）。
+> ⚠️ 注意：pi 不注入 settings.json 顶层 `env` 段到扩展进程，凭证请配在 `feishu` section 内。
 
-```bash
-export FEISHU_APP_ID=cli_xxx
-export FEISHU_APP_SECRET=xxx
-```
-
-缺失凭据时扩展静默不激活，`/feishu-follow on` 会提示配置方法。
+缺失凭证时扩展静默不激活，`/feishu-follow on` 会提示配置方法。
 
 ## 命令
 

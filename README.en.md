@@ -34,6 +34,8 @@ A Feishu (Lark) "remote cockpit" extension for pi sessions — turn a Feishu gro
 {
   "feishu": {
     "chatId": "oc_xxx",
+    "appId": "cli_xxx",
+    "appSecret": "xxx",
     "whitelist": ["ou_xxx"],
     "truncateThreshold": 2000,
     "sessionName": "my-session"
@@ -41,12 +43,7 @@ A Feishu (Lark) "remote cockpit" extension for pi sessions — turn a Feishu gro
 }
 ```
 
-Credentials via environment variables:
-
-```bash
-export FEISHU_APP_ID=cli_xxx
-export FEISHU_APP_SECRET=xxx
-```
+> Environment variables `FEISHU_APP_ID` / `FEISHU_APP_SECRET` work as a fallback (lower priority than settings). Note: pi does not inject a top-level `env` section into extension processes — put credentials inside the `feishu` section.
 
 The extension stays silently inactive without credentials; `/feishu-follow on` will show setup instructions.
 

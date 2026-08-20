@@ -1,5 +1,5 @@
 /**
- * 凭证管理 — 环境变量优先，兑底 settings.json feishu section（appId/appSecret 字段）
+ * 凭证管理 — settings.json feishu section（appId/appSecret）为主，环境变量兼容兑底
  */
 
 import type { FeishuConfig } from "./types";
@@ -10,8 +10,8 @@ export interface FeishuCredentials {
 }
 
 export function getCredentials(config?: FeishuConfig): FeishuCredentials | null {
-	const appId = process.env.FEISHU_APP_ID || config?.appId || "";
-	const appSecret = process.env.FEISHU_APP_SECRET || config?.appSecret || "";
+	const appId = config?.appId || process.env.FEISHU_APP_ID || "";
+	const appSecret = config?.appSecret || process.env.FEISHU_APP_SECRET || "";
 	if (!appId || !appSecret) return null;
 	return { appId, appSecret };
 }
