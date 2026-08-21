@@ -8,6 +8,7 @@
 	},
 	"dependencies": {
 		"@larksuiteoapi/node-sdk": "^1.51.0",
+		"@pi-atelier/rpiv-ask-user": "^3.0.0",
 		"@pi-atelier/shared-utils": "^1.0.0",
 		"jiti": "^2.6.3"
 	},

@@ -12,7 +12,8 @@ import {
 	type AskPromptQuestion,
 } from "./broadcast";
 import { appendOutbox } from "./outbox";
-import { parseAnswerSpec, type AnswerSpecItem, type AnswerSpecQuestion } from "./answer-spec";
+import { parseAnswerSpec } from "./answer-spec";
+import { askUserApi } from "./ask-user-api";
 
 /** isIdle 安全调用（ctx 可能随会话销毁失效） */
 export function safeIsIdle(ctx: unknown): boolean {
@@ -115,20 +116,6 @@ export function handleAskUserPrompt(
 	);
 }
 
-/** fork 包在 globalThis 上注册的 API 入口（无依赖消费） */
-function askUserApi(): {
-	getActiveAskParams: () => { questions?: AnswerSpecQuestion[] } | null;
-	submitAskUserAnswer: (r: {
-		answers: AnswerSpecItem[];
-		cancelled: boolean;
-	}) => boolean;
-} | null {
-	const s = globalThis as Record<symbol, unknown>;
-	return (
-		(s[Symbol.for("@pi-atelier/rpiv-ask-user/api")] as ReturnType<typeof askUserApi>) ?? null
-	);
-}
-
 /** 消费 ask-user-answer pending：程序化回填问卷（幂等失败 → 播报过期）。
  * answerSpec 支持多题（逗号分隔）、多选（|）、自定义（=文本），单数字向后兼容。 */
 export async function consumeAskUserAnswer(
@@ -146,7 +133,7 @@ export async function consumeAskUserAnswer(
 			expectAck: false,
 		});
 	};
-	const api = askUserApi();
+	const api = await askUserApi();
 	const params = api?.getActiveAskParams();
 	if (!api || !params?.questions?.length) {
 		reply("问卷已答复或已过期");
