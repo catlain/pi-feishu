@@ -196,6 +196,8 @@ async function main(): Promise<void> {
 	const idle = initIdleState();
 	const timer = setInterval(() => {
 		try {
+			// 诊断快照：每 30s 一行连接健康摘要（pong 验证期临时，定位后移除）
+			keeper.diagSnapshot();
 			const claims = readClaims();
 			const anyAlive = Object.values(claims).flat().some((e) => isAlive(e));
 			// D3：仅「连接健康且无存活 claim」才推进自退；黑洞/重建期冻结计时，防网关在恢复窗口内消失

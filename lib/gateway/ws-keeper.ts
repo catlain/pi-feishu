@@ -40,6 +40,7 @@ export class WsKeeper {
 	private sdk: typeof import("@larksuiteoapi/node-sdk");
 	private ws: import("@larksuiteoapi/node-sdk").WSClient | null = null;
 	private terminal = false; // SDK 已放弃（onError）
+	private startCount = 0;
 	private lastEventAt = Date.now();
 	/** 最近一次入站帧（dispatcher 入口刷新，去重前）— 帧水位优先判活用 */
 	private lastFrameAt = Date.now();
@@ -104,12 +105,22 @@ export class WsKeeper {
 	private seenEventIdsRing: string[] = [];
 
 	/** 出站成功回调（main.ts 接线）：刷新出站水位 */
+/** 诊断快照：连接状态/帧水位/启动计数（pong 验证期临时） */
+	diagSnapshot(): void {
+		const now = Date.now();
+		const status = (this.ws as unknown as { getConnectionStatus?: () => { state?: string } })?.getConnectionStatus?.();
+		this.opts.log(
+			`[diag] 30s快照: sdkState=${status?.state ?? "?"} terminal=${this.terminal} 距上次入帧=${Math.round((now - this.lastFrameAt) / 1000)}s 距上次出站=${this.lastOutboundAt ? Math.round((now - this.lastOutboundAt) / 1000) : "-"}s start次数=${this.startCount}`,
+		);
+	}
+
 	notifyOutboundOk(): void {
 		this.lastOutboundAt = Date.now();
 	}
 
 	/** 建立全新 WSClient（首次与整体重启共用；SDK 断线自愈由其内置循环负责） */
 	async start(): Promise<void> {
+		this.opts.log(`[ws-life] start() 进入（第 ${this.startCount = (this.startCount ?? 0) + 1} 次）`);
 		// 重建原子性（D1）：先关旧 client，杜绝双连接分流（幽灵进程同款丢包形态）
 		if (this.ws) {
 			const old = this.ws as unknown as {
@@ -172,7 +183,7 @@ export class WsKeeper {
 			// liveness watchdog（SDK ≥1.64.0，官方 commit dc28142）：距上次 ping 后 90s 无任何入站帧
 			// （含 pong）→ 主动 terminate 触发标准重连。⚠️ 必须在构造器 wsConfig 传，start() 参数无效。
 			// 默认关闭（?? 0）；半开连接分钟级无感知 → 240s：须大于服务端 pingInterval(默认120s)+余量——90s 版曾在静默期周期性自杀（watchdog fire→重连→过渡窗丢消息，2026-08-21 01:47 实锤）
-			wsConfig: { pingTimeout: 240 },
+			wsConfig: { pingTimeout: 45 }, // 诊断期 45s：快速观察 watchdog 行为，验证完恢复 240
 		} as ConstructorParameters<typeof import("@larksuiteoapi/node-sdk").WSClient>[0]);
 		await this.ws.start({
 			eventDispatcher: dispatcher as unknown as EventDispatcher,

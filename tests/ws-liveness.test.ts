@@ -111,7 +111,7 @@ describe("重建原子性（D1）", () => {
 		const { keeper, startCalls } = mkKeeper();
 		await keeper.start();
 		const ctorOpts = startCalls[0] as { wsConfig?: { pingTimeout?: number } };
-		expect(ctorOpts?.wsConfig?.pingTimeout).toBe(240);
+		expect(ctorOpts?.wsConfig?.pingTimeout).toBe(process.env.PI_FEISHU_DIAG === "45" ? 45 : 240);
 	});
 });
 
