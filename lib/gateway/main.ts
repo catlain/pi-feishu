@@ -168,9 +168,10 @@ async function main(): Promise<void> {
 		exit: (code) => shutdown(code),
 		// 运行期竞争连接监测（同 app 第二 WS 分流事件是时通时不通实锤元凶）
 		checkCompeting: () => findCompetingFeishuClients(process.pid),
-		// SDK logger 注入文件流，SDK 日志不再写 console；debug 级打印每条 WS 收帧（丢包诊断，定位后改回）
+		// SDK logger 注入文件流，SDK 日志不再写 console；trace=5 可见 ping/pong+原始分片组装（诊断「零帧丢失」：
+		// debug 帧只在分片组装成功后打印，组装失败静默——需 trace 层区分「数据没到」vs「到了但 SDK 吞了」）
 		logger: createSdkLogger((line) => logStream.write(`${line}\n`)),
-		loggerLevel: 4,
+		loggerLevel: 5,
 	});
 	// 出站成功 → 刷新帧水位判活的出站侧（reply 路径）
 	function keeperNotifyOutbound(): void {
