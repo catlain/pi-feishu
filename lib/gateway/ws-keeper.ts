@@ -65,8 +65,13 @@ export class WsKeeper {
 		this.ws = new this.sdk.WSClient({
 			appId: this.opts.credentials.appId,
 			appSecret: this.opts.credentials.appSecret,
-			// 零注入：无 logger / loggerLevel / wsConfig——行为 100% 交 SDK 标准路径（D1/D2）
-		} as ConstructorParameters<typeof import("@larksuiteoapi/node-sdk").WSClient>[0]);
+			// 诊断期（T5）：SDK 原生参数，零自研组件——
+			// loggerLevel trace：帧级+ping/pong 可见（定位后降回默认）
+			// pingTimeout 90：SDK 内置 liveness 看门狗（ping 后 90s 无任何入站帧 → terminate → 标准重连），
+			//   验证对「僵尸连接」的自愈效果（双端日志已证实服务端往僵尸连接写事件并报 SUCCESS）
+			loggerLevel: this.sdk.LoggerLevel.trace,
+			wsConfig: { pingTimeout: 90 },
+		});
 		await this.ws.start({
 			eventDispatcher: dispatcher as unknown as EventDispatcher,
 			onError: (err: Error) => {

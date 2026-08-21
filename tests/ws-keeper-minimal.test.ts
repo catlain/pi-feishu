@@ -68,6 +68,7 @@ describe("eventId 去重（防官方 3s 超时重推）", () => {
 			close() {}
 		}
 		const sdk = {
+			LoggerLevel: { fatal: 0, error: 1, warn: 2, info: 3, debug: 4, trace: 5 },
 			EventDispatcher: class {
 				register(ev: typeof dispatcherReg) {
 					Object.assign(dispatcherReg, ev);
@@ -93,14 +94,17 @@ describe("eventId 去重（防官方 3s 超时重推）", () => {
 });
 
 describe("SDK 构造零注入（spec 场景：无 logger/pingTimeout/wsConfig）", () => {
-	it("WSClient 构造参数仅含凭证", async () => {
+	it("WSClient 构造参数：凭证 + 诊断 loggerLevel/pingTimeout（诊断期 SDK 原生参数，无 logger 组件注入）", async () => {
 		const { keeper, startCalls } = mkKeeper();
 		await keeper.start();
 		const ctorOpts = startCalls[0] as Record<string, unknown>;
-		expect(ctorOpts).toEqual({ appId: "a", appSecret: "s" });
+		expect(ctorOpts).toEqual({
+			appId: "a",
+			appSecret: "s",
+			loggerLevel: 5,
+			wsConfig: { pingTimeout: 90 },
+		});
 		expect("logger" in ctorOpts).toBe(false);
-		expect("loggerLevel" in ctorOpts).toBe(false);
-		expect("wsConfig" in ctorOpts).toBe(false);
 	});
 });
 

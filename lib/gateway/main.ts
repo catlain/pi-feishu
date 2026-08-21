@@ -78,6 +78,8 @@ async function main(): Promise<void> {
 			})) as { data?: { message_id?: string } };
 			// 网关提示语也可作锦点（绑定目标会话）：用户引用「已转交 xxx」续聊是自然意图
 			const mid = res?.data?.message_id;
+			// 诊断期（T5）：出站结果留痕——区分「网关没发」vs「发了但用户没收到」；定位后可保留（一行成本）
+			log(`出站回复 ok messageId=${mid ?? "?"} text="${text.slice(0, 30)}"`);
 			if (anchorSessionId && mid) recordAnchor(mid, anchorSessionId);
 		} catch (err) {
 			log(`群回复失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -158,15 +160,19 @@ async function main(): Promise<void> {
 	});
 	await keeper.start();
 
-	startGatewayOutbox(
-		client as never,
-		config.chatId,
-		{
-			exportDoc: (title, text) => exportToDoc(client as never, title, text),
-			log: (msg) => log(msg),
-		},
-	);
-	log("outbox-drainer 已启动（重启重放：遗留条目将按 FIFO 补发，过期 ask-waiting 丢弃）");
+	if (process.env.FEISHU_EXPERIMENT_NO_OUTBOUND === "1") {
+		log("⚠️ 实验模式：全部出站钉死（reply 已抑制 + outbox-drainer 不启动），堆积只记日志");
+	} else {
+		startGatewayOutbox(
+			client as never,
+			config.chatId,
+			{
+				exportDoc: (title, text) => exportToDoc(client as never, title, text),
+				log: (msg) => log(msg),
+			},
+		);
+		log("outbox-drainer 已启动（重启重放：遗留条目将按 FIFO 补发，过期 ask-waiting 丢弃）");
+	}
 
 	log("网关常驻运行（无自退；停止用 /feishu-gateway off）");
 }
