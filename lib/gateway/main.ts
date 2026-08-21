@@ -10,6 +10,7 @@
  */
 
 import * as fs from "node:fs";
+import { findCompetingFeishuClients } from "./commands";
 import * as path from "node:path";
 import * as os from "node:os";
 import { getFeishuConfig } from "../config";
@@ -165,6 +166,8 @@ async function main(): Promise<void> {
 		},
 		log,
 		exit: (code) => shutdown(code),
+		// 运行期竞争连接监测（同 app 第二 WS 分流事件是时通时不通实锤元凶）
+		checkCompeting: () => findCompetingFeishuClients(process.pid),
 		// SDK logger 注入文件流，SDK 日志不再写 console；debug 级打印每条 WS 收帧（丢包诊断，定位后改回）
 		logger: createSdkLogger((line) => logStream.write(`${line}\n`)),
 		loggerLevel: 4,

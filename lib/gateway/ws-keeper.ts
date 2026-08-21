@@ -31,6 +31,8 @@ export interface WsKeeperOptions {
 	logger?: SdkLogger;
 	/** SDK 日志级别（诊断期 4=debug，定位后移除） */
 	loggerLevel?: number;
+	/** 运行期竞争连接检测（同 app 第二 WS 会随机分流事件）；不传则不监测 */
+	checkCompeting?: () => Array<{ pid: number; cmd: string }>;
 }
 
 export class WsKeeper {
@@ -136,8 +138,10 @@ export class WsKeeper {
 			"im.message.receive_v1": async (data: unknown) => {
 				this.lastEventAt = Date.now();
 				this.lastFrameAt = Date.now(); // 帧水位（去重前刷新）
-				// eventId 去重：官方 3s 超时重推会重复送达同一事件
-				const evId = (data as { header?: { event_id?: string } })?.header?.event_id;
+				// eventId 去重：官方 3s 超时重推会重复送达同一事件。
+				// schema 2.0 事件 event_id 在顶层；旧 schema 在 header.event_id（兼容双读）
+				const ev = data as { event_id?: string; header?: { event_id?: string } };
+				const evId = ev?.event_id ?? ev?.header?.event_id;
 				if (evId) {
 					if (this.seenEventIds.has(evId)) {
 						this.opts.log(`重复事件丢弃（eventId=${evId}，官方重推机制）`);
@@ -191,17 +195,37 @@ export class WsKeeper {
 		this.lastEventAt = Date.now();
 		this.lastFrameAt = Date.now();
 		this.opts.log("WS 长连接已建立（全机器唯一客户端，SDK 内置重连 + 水位兜底）");
-		// 启动就绪播报：飞书服务端切到新连接有过渡期（实测约 1 分钟内，期间事件丢弃不重投），
-		// 群里收到本条即代表可正常遥控
-		void this.opts.reply("[pi] 网关已就绪（约 1 分钟内发送的指令可能被丢弃，若未响应请重发）");
+		// 启动就绪播报：飞书服务端切到新连接有过渡期（实测可达 4 分钟，期间事件丢弃不重投），
+		// 群里收到本条仅代表出站通，入站真正恢复以能收到指令为准
+		void this.opts.reply("[pi] 网关已就绪（预热中：约 5 分钟内指令可能被丢弃，未响应请重发）");
 	}
 
 	/** 启动兜底扫描循环（30s）：SDK terminal 或水位死亡时整体重建；持续失败 30 分钟熔断 */
+	/** 运行期竞争连接监测：发现同 app 其他 WS 客户端即群播警告（5 分钟节流） */
+	private lastCompeteWarnAt = 0;
+
 	startReconnectLoop(onGiveup: () => void): void {
 		this.timer = setInterval(() => {
 			try {
 				const now = Date.now();
 				const connected = this.isConnected(now);
+
+				// 运行期竞争监测（需注入 checkCompeting 回调）：同 app 第二连接会随机分流事件，
+				// 是「时通时不通」的已实锤元凶；只在 on/status 扫一次不够（幽灵进程随时可起）
+				if (this.opts.checkCompeting && connected && now - this.lastCompeteWarnAt > 300_000) {
+					const rivals = this.opts.checkCompeting();
+					if (rivals.length > 0) {
+						this.lastCompeteWarnAt = now;
+						this.opts.log(
+							`⚠️ 检测到竞争飞书 WS 客户端（${rivals.length} 个）：${rivals.map((r) => `PID ${r.pid}`).join("、")}`,
+						);
+						void this.opts.reply(
+							`[pi] ⚠️ 检测到 ${rivals.length} 个其他飞书 WS 客户端在抢事件（网关时通时不通的元凶），请关闭对应进程：${rivals.map((r) => `PID ${r.pid}`).join("、")}`,
+						);
+					} else {
+						this.lastCompeteWarnAt = now - 240_000; // 无竞争时 1 分钟后再查
+				}
+				}
 
 				if (connected && this.reconnect.deadSince !== null) {
 					this.opts.log("WS 连接已恢复（整体重启成功）");
