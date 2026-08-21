@@ -51,9 +51,13 @@ describe("parseAnswerSpec", () => {
 		]);
 	});
 
-	it("文本含半角逗号 → 段数不符提示（截断引导）", () => {
+	it("末尾自定义文本含逗号 → 智能合并为 custom", () => {
 		const r = parseAnswerSpec("1,1|3,=a,b", mixed3Q);
-		expect(r).toContain("段数（4）与题数（3）不符");
+		expect(r).toEqual([
+			{ questionIndex: 0, question: "用哪个库？", kind: "option", answer: "libA" },
+			{ questionIndex: 1, question: "启用哪些功能？", kind: "multi", selected: ["x", "z"], answer: null },
+			{ questionIndex: 2, question: "端口？", kind: "custom", answer: "a,b" },
+		]);
 	});
 
 	it("题数不符（少答/多答）→ 错误", () => {
@@ -82,5 +86,22 @@ describe("parseAnswerSpec", () => {
 	it("= 空文本 → 错误", () => {
 		const r = parseAnswerSpec("=", singleQ);
 		expect(r).toContain("自定义答案为空");
+	});
+});
+
+describe("自定义文本含逗号智能合并", () => {
+	const qs3 = [
+		{ question: "a", options: [{ label: "A" }, { label: "B" }] },
+		{ question: "b", multiSelect: true, options: [{ label: "x" }, { label: "y" }] },
+		{ question: "c", options: [{ label: "无" }, { label: "略" }] },
+	];
+	it("超额段自动并入 = 开头段", () => {
+		const r = parseAnswerSpec("1,1|2,=测试,通过,完美", qs3 as never);
+		expect(Array.isArray(r)).toBe(true);
+		if (Array.isArray(r)) expect(r[2]!.answer).toBe("测试,通过,完美");
+	});
+	it("无 = 段时仍报段数错误", () => {
+		const r = parseAnswerSpec("1,2,3,4", qs3 as never);
+		expect(typeof r).toBe("string");
 	});
 });

@@ -6,6 +6,7 @@
  * - 多选题（multiSelect）：竖线分隔选项号，如 `1|3`
  * - 自定义题（任意题型可作 custom）：`=` 开头自由文本，如 `=先把服务停了`
  * - 半角逗号是答案分隔符，自定义文本内不能含（含则截断，错误提示引导）
+ *   → 已改进：逐题消费时若段数超额，多余段自动并入当前自定义文本（智能合并）
  */
 
 export interface AnswerSpecQuestion {
@@ -24,13 +25,34 @@ export interface AnswerSpecItem {
 
 /** 解析答案串：逐题校验题数/题型/编号范围。
  * 返回错误串（具体到题，可直接播报）或解析后的逐题答案数组。 */
+/** 段数超额时尝试把多余段并入 = 开头的自定义段（从后往前补齐题数）。
+ * 仅当存在唯一的合并方案（所有超额段都归入同一个 = 段）时返回合并后数组。 */
+function tryMergeCustomSegments(segs: string[], questionCount: number): string[] | null {
+	const excess = segs.length - questionCount;
+	if (excess <= 0) return null;
+	// 找候选：= 开头的段（不含最后一段位置之外的），其后有足够段可吸收
+	for (let i = segs.length - excess - 1; i >= 0; i--) {
+		if (!segs[i]!.trim().startsWith("=")) continue;
+		// 从 i 开始：保留 i 之前的段，把 i..end 合并成一段
+		const before = segs.slice(0, i);
+		const mergedText = segs.slice(i).join(",");
+		if (before.length + 1 === questionCount) return [...before, mergedText];
+	}
+	return null;
+}
+
 export function parseAnswerSpec(
 	answerSpec: string,
 	questions: AnswerSpecQuestion[],
 ): AnswerSpecItem[] | string {
-	const rawSegments = answerSpec.split(",");
-	if (questions.length !== rawSegments.length) {
-		return `答案段数（${rawSegments.length}）与题数（${questions.length}）不符，请按题序逗号分隔，每题一答`;
+	let rawSegments = answerSpec.split(",");
+	if (rawSegments.length !== questions.length) {
+		// 智能合并：自定义文本含半角逗号时，多余段并入最近的 = 开头段
+		const merged = tryMergeCustomSegments(rawSegments, questions.length);
+		if (!merged) {
+			return `答案段数（${rawSegments.length}）与题数（${questions.length}）不符，请按题序逗号分隔，每题一答`;
+		}
+		rawSegments = merged;
 	}
 	const items: AnswerSpecItem[] = [];
 	for (let qi = 0; qi < rawSegments.length; qi++) {
