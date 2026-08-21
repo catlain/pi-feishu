@@ -25,6 +25,78 @@ export type GatewayRouteAction =
 	| "routed"           // 写 pending + 回执
 	| "not_found_reply"; // 目标不在线，网关回复在线列表
 
+/** 路由决策结果（纯决策，无副作用；WS 分流与 Poller 合并均复用此判定，T2.2）
+ * - transfer：写 pending 转交目标会话（Poller 侧按目标分组合并）
+ * - command：网关直接回复（list / 不在线 / 多匹配），时效敏感，WS 实时处理
+ * - ignored：不处理 */
+export type RouteResolution =
+	| { kind: "ignored" }
+	| { kind: "command"; reason: "list" | "not_found" | "ambiguous" }
+	| { kind: "transfer"; targetSessionId: string; targetSessionName: string; answerSpec?: string; commandText?: string };
+
+/** 路由判定（纯函数）：从 gatewayRoute 提取的决策核心，双处复用不新造规则 */
+export function resolveRoute(
+	parsed: {
+		mentionedBot: boolean;
+		senderOpenId: string | null;
+		isSelfMessage: boolean;
+		text: string;
+		parentId?: string | null;
+	},
+	deps: Pick<GatewayRouteDeps, "claims" | "whitelist">,
+): RouteResolution {
+	if (parsed.isSelfMessage) return { kind: "ignored" };
+	if (!isWhitelisted(parsed.senderOpenId, deps.whitelist)) return { kind: "ignored" };
+
+	const text = parsed.text.trim();
+
+	// ── 引用回复路由优先（D3）：免 @ 免名字直达 ──
+	if (parsed.parentId) {
+		const anchorSid = lookupAnchor(parsed.parentId);
+		if (anchorSid) {
+			const target = deps.claims.find((e) => e.sessionId === anchorSid);
+			if (!target) return { kind: "command", reason: "not_found" };
+			// awr 代答：answerSpec 提取（与名字路由同语法）
+			const answerMatch = /^(?:awr|answer|代答)\s+(.+)$/.exec(text);
+			if (answerMatch) {
+				return { kind: "transfer", targetSessionId: target.sessionId, targetSessionName: target.sessionName, answerSpec: answerMatch[1].trim() };
+			}
+			return { kind: "transfer", targetSessionId: target.sessionId, targetSessionName: target.sessionName };
+		}
+		// 未命中的引用消息：仅当明确 @bot 才走名字路由，否则静默忽略
+		if (!parsed.mentionedBot) return { kind: "ignored" };
+	}
+
+	if (!parsed.mentionedBot) return { kind: "ignored" };
+	if (!text) return { kind: "ignored" };
+
+	const live = deps.claims;
+
+	if (text === "list" || text === "list 会话") {
+		return { kind: "command", reason: "list" };
+	}
+
+	const cmd = parseCommand(text);
+	if (!cmd) return { kind: "ignored" };
+
+	// 精确匹配 → 唯一前缀匹配
+	let target = live.find((e) => e.sessionName === cmd.sessionName);
+	if (!target) {
+		const candidates = live.filter(
+			(e) => e.sessionName.startsWith(`${cmd.sessionName}-`),
+		);
+		if (candidates.length === 1) target = candidates[0];
+		else if (candidates.length > 1) return { kind: "command", reason: "ambiguous" };
+	}
+	if (!target) return { kind: "command", reason: "not_found" };
+
+	const answerMatch = /^(?:awr|answer|代答)\s+(.+)$/.exec(cmd.command);
+	if (answerMatch) {
+		return { kind: "transfer", targetSessionId: target.sessionId, targetSessionName: target.sessionName, answerSpec: answerMatch[1].trim() };
+	}
+	return { kind: "transfer", targetSessionId: target.sessionId, targetSessionName: target.sessionName, commandText: cmd.command };
+}
+
 /** 网关侧路由决策（复用 events.ts 原语，会话侧 routeInbound 的网关版） */
 export function gatewayRoute(
 	deps: GatewayRouteDeps,

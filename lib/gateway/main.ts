@@ -16,15 +16,17 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { getFeishuConfig } from "../config";
 import { getCredentials } from "../credentials";
-import { readClaims, isAlive, GATEWAY_LOG_PATH } from "../claim";
+import { GATEWAY_LOG_PATH } from "../claim";
 import { initAnchors, recordAnchor } from "./anchors";
-import { writePending as writePendingFile } from "../pending";
-import { parseInboundEvent, isWhitelisted } from "../events";
-import { gatewayRoute } from "./route";
+import { createInboundHandler } from "./inbound-handler";
 import { startGatewayOutbox } from "./outbox-drainer";
 import { exportToDoc } from "../doc";
 import { readLock, writeLock, clearLock, isProcessAlive } from "./lifecycle";
 import { WsKeeper } from "./ws-keeper";
+import { startPoller } from "./poller";
+import { MessageIdDedup, readWatermark, watermarkPath } from "./poller-core";
+import { injectPolledItems } from "./poller-inject";
+import { getPollIntervalSec, FEISHU_POLL_INTERVAL_DEFAULT } from "./interval-config";
 import type { FeishuMessageEvent } from "../types";
 
 // ── 日志：gateway.log（追加模式，与 spawn 层 SDK stdio 重定向同文件、单一日志流）──
@@ -102,61 +104,26 @@ async function main(): Promise<void> {
 	botOpenId = await fetchBotOpenId();
 	log(botOpenId ? `bot open_id: ${botOpenId}` : "⚠️ 无法获取 bot open_id（入站将不可用，重试中）");
 
-	// ── 入站处理 ──
-	// botOpenId 缺失丢弃日志（5 分钟节流）
-	let lastBotIdWarnAt = 0;
-	function onMessage(data: unknown): void {
-		if (!botOpenId) {
-			if (Date.now() - lastBotIdWarnAt > 5 * 60_000) {
-				lastBotIdWarnAt = Date.now();
-				log("⚠️ 入站丢弃：botOpenId 未就绪（获取失败重试中），期间消息不可路由");
-			}
-			void fetchBotOpenId().then((id) => {
-				if (id) botOpenId = id;
-			});
-			return;
-		}
-		const parsed = parseInboundEvent(data as FeishuMessageEvent, botOpenId);
-		if (parsed.chatId !== config.chatId) {
-			log(`入站丢弃：chatId 不匹配 event=${parsed.chatId} config=${config.chatId}`);
-			return;
-		}
-		const liveClaims = (readClaims()[config.chatId] ?? []).filter((e) =>
-			isAlive(e),
-		);
-		const action = gatewayRoute(
-			{
-				claims: liveClaims,
-				whitelist: config.whitelist,
-				writePending: (sessionId, d) => writePendingFile(sessionId, d),
-				reply: (text) => void reply(text),
-			},
-			parsed,
-		);
-		if (action !== "ignored") {
-			const delay = parsed.eventTimeMs ? Date.now() - parsed.eventTimeMs : null;
-			log(
-				`路由 ${action}: "${parsed.text.slice(0, 50)}"` +
-					(delay !== null ? `（事件延迟 ${(delay / 1000).toFixed(1)}s）` : "（无事件时间戳）"),
-			);
-		} else {
-			// 观测盲区修复：ignored 也留痕并区分原因，区分「没到达」vs「到达被忽略」
-			let reason = "非 @bot 消息";
-			if (parsed.parentId) reason = "引用回复锦点未命中（引用的不是 bot 会话消息，且未 @bot）";
-			else if (parsed.mentionedBot && !isWhitelisted(parsed.senderOpenId, config.whitelist))
-				reason = "@bot 但发送者不在白名单";
-			log(
-				`路由 ignored（${reason}）: "${parsed.text.slice(0, 50)}" parentId=${parsed.parentId ?? "-"}`,
-			);
-		}
-	}
+	// ── 入站处理（提取到 inbound-handler.ts）──
+	const inbound = createInboundHandler({
+		chatId: config.chatId,
+		whitelist: config.whitelist,
+		botOpenId,
+		reply: (text, anchorSessionId) => void reply(text, anchorSessionId),
+		refetchBotOpenId: fetchBotOpenId,
+		log,
+	});
 
-	// ── 唯一 WS 连接（断线自愈由 SDK 内置重连负责）──
+	// ── 唯一 WS 连接（断线自愈由 SDK 内置重连负责；只处理命令类事件，T2.1）──
+	// 双键去重集合（D5）：WS 与 Poller 共用 message_id
+	const dedup = new MessageIdDedup();
 	const keeper = new WsKeeper(sdk, {
 		credentials,
-		onMessage,
+		onMessage: inbound.onMessage,
 		reply: (text) => reply(text),
 		log,
+		filter: inbound.isCommandEvent,
+		dedup,
 	});
 	await keeper.start();
 
@@ -173,6 +140,29 @@ async function main(): Promise<void> {
 		);
 		log("outbox-drainer 已启动（重启重放：遗留条目将按 FIFO 补发，过期 ask-waiting 丢弃）");
 	}
+
+	// ── 拉取 Poller（入站主通道，D1）──
+	const dataDir = path.dirname(GATEWAY_LOG_PATH); // ~/.pi/agent/feishu-bridge
+	const wmFile = watermarkPath(dataDir);
+	const wm = readWatermark(wmFile);
+	log(`Poller 启动：间隔 ${getPollIntervalSec(os.homedir())}s（热生效）、水位 ${wm ? `pos=${wm.position}` : "无（首启用时间窗重叠）"}、文件 ${wmFile}`);
+	const poller = startPoller({
+		client: {
+			request: (opts) =>
+				client.request({ url: opts.url, method: opts.method, params: opts.params } as never),
+		},
+		chatId: config.chatId,
+		dataDir,
+		intervalSec: () => getPollIntervalSec(os.homedir()), // 每 tick 重读：命令修改后热生效（D4）
+		onItems: (items) => {
+			const id = inbound.getBotOpenId();
+			if (!id) {
+				throw new Error("botOpenId 未就绪（水位不推进，下轮重拉）");
+			}
+			injectPolledItems(items, { ...inbound.routeDeps(), botOpenId: id, chatId: config.chatId, dedup, log });
+		},
+		log,
+	});
 
 	log("网关常驻运行（无自退；停止用 /feishu-gateway off）");
 }

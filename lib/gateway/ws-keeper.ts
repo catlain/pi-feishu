@@ -8,12 +8,17 @@
  */
 
 import type { EventDispatcher } from "@larksuiteoapi/node-sdk";
+import type { MessageIdDedup } from "./poller-core";
 
 export interface WsKeeperOptions {
 	credentials: { appId: string; appSecret: string };
 	onMessage: (data: unknown) => void;
 	reply: (text: string) => Promise<void>;
 	log: (msg: string) => void;
+	/** 事件分流器（T2.1）：返回 true 才实时处理；false 丢弃（普通消息等拉取） */
+	filter?: (data: unknown) => boolean;
+	/** message_id 双键去重（WS 与 Poller 共用，D5）；未传时退化为仅 eventId 去重 */
+	dedup?: MessageIdDedup;
 }
 
 export class WsKeeper {
@@ -53,6 +58,21 @@ export class WsKeeper {
 						if (old) this.seenEventIds.delete(old);
 					}
 				}
+				// message_id 双键去重（D5）：与 Poller 共用集合，双通道幂等互斥。
+				// ⚠️ 先判重复、分流丢弃后再标记：丢弃的消息未被处理，不能标记（否则 Poller 也跳过 → 双双丢失）
+				const messageId =
+					(data as { message?: { message_id?: string } })?.message?.message_id;
+				if (messageId && this.opts.dedup?.has(messageId)) {
+					this.opts.log(`重复消息丢弃（messageId=${messageId}，拉取通道已处理）`);
+					return;
+				}
+				// 分流（T2.1/D1）：命令类实时处理，普通消息丢弃（由拉取通道负责）
+				if (this.opts.filter && !this.opts.filter(data)) {
+					const text = String((data as { message?: { content?: string } })?.message?.content ?? "").slice(0, 50);
+					this.opts.log(`WS 普通消息丢弃（等拉取）: ${text}`);
+					return;
+				}
+				if (messageId && this.opts.dedup) this.opts.dedup.add(messageId);
 				try {
 					this.opts.onMessage(data);
 				} catch (err) {
@@ -65,12 +85,10 @@ export class WsKeeper {
 		this.ws = new this.sdk.WSClient({
 			appId: this.opts.credentials.appId,
 			appSecret: this.opts.credentials.appSecret,
-			// 诊断期（T5）：SDK 原生参数，零自研组件——
-			// loggerLevel trace：帧级+ping/pong 可见（定位后降回默认）
-			// pingTimeout 90：SDK 内置 liveness 看门狗（ping 后 90s 无任何入站帧 → terminate → 标准重连），
-			//   验证对「僵尸连接」的自愈效果（双端日志已证实服务端往僵尸连接写事件并报 SUCCESS）
-			loggerLevel: this.sdk.LoggerLevel.trace,
-			wsConfig: { pingTimeout: 90 },
+			// 实验开关代码保留（feishu-gateway-simplify 诊断期参数，需要时可恢复）：
+			//   loggerLevel: this.sdk.LoggerLevel.trace（帧级可见）
+			//   wsConfig: { pingTimeout: 90 }（liveness 看门狗）
+			// 默认已恢复（feishu-poll-primary T5.3：WS 只留命令，诊断结束）
 		});
 		await this.ws.start({
 			eventDispatcher: dispatcher as unknown as EventDispatcher,

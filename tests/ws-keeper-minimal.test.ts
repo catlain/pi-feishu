@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import { WsKeeper } from "../lib/gateway/ws-keeper";
+import { MessageIdDedup } from "../lib/gateway/poller-core";
 import { drainSession, type DrainerDeps } from "../lib/gateway/outbox-drainer";
 import { appendOutbox } from "../lib/outbox";
 import * as fs from "node:fs";
@@ -93,17 +94,12 @@ describe("eventId 去重（防官方 3s 超时重推）", () => {
 	});
 });
 
-describe("SDK 构造零注入（spec 场景：无 logger/pingTimeout/wsConfig）", () => {
-	it("WSClient 构造参数：凭证 + 诊断 loggerLevel/pingTimeout（诊断期 SDK 原生参数，无 logger 组件注入）", async () => {
+describe("SDK 构造零注入", () => {
+	it("WSClient 构造参数：仅凭证（诊断参数已关，T5.3；实验代码见 ws-keeper 注释）", async () => {
 		const { keeper, startCalls } = mkKeeper();
 		await keeper.start();
 		const ctorOpts = startCalls[0] as Record<string, unknown>;
-		expect(ctorOpts).toEqual({
-			appId: "a",
-			appSecret: "s",
-			loggerLevel: 5,
-			wsConfig: { pingTimeout: 90 },
-		});
+		expect(ctorOpts).toEqual({ appId: "a", appSecret: "s" });
 		expect("logger" in ctorOpts).toBe(false);
 	});
 });

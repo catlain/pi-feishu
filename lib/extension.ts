@@ -9,7 +9,7 @@ import { getFeishuConfig } from "./config";
 import { getCredentials } from "./credentials";
 import { getChatClaims, isAlive } from "./claim";
 import { appendOutbox } from "./outbox";
-import { gatewayOn, gatewayOff, gatewayStatus } from "./gateway/commands";
+import { gatewayOn, gatewayOff, gatewayStatus, gatewayInterval } from "./gateway/commands";
 import { createFollowController, type CommandCtx } from "./session-follow";
 import {
 	handleAgentEnd,
@@ -104,11 +104,14 @@ export const createFeishuExtension: ExtensionFactory = (pi) => {
 
 	// ── 网关生命周期命令（实现在 lib/gateway/commands.ts） ──
 	pi.registerCommand("feishu-gateway", {
-		description: "管理飞书网关进程。用法: /feishu-gateway on|off|status",
+		description:
+			"管理飞书网关进程。用法: /feishu-gateway on|off|status|interval <秒>",
 		handler: async (args: string, ctx: CommandCtx) => {
-			const sub = args.trim() || "status";
+			const trimmed = args.trim();
+			const [sub, ...rest] = trimmed.split(/\s+/);
 			if (sub === "on") gatewayOn(ctx, !!credentials);
 			else if (sub === "off") gatewayOff(ctx);
+			else if (sub === "interval") gatewayInterval(ctx, rest[0] ?? "");
 			else gatewayStatus(ctx, config.chatId ? getChatClaims(config.chatId) : []);
 		},
 	});

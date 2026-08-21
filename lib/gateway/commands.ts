@@ -11,6 +11,13 @@ import * as childProcess from "node:child_process";
 import type { ClaimEntry } from "../types";
 import { isAlive, GATEWAY_LOG_PATH } from "../claim";
 import { readLock, isLockValid } from "./lifecycle";
+import {
+	validateIntervalSec,
+	getPollIntervalSec,
+	setPollIntervalSec,
+} from "./interval-config";
+import { readWatermark, watermarkPath } from "./poller-core";
+import * as os from "node:os";
 
 /** 命令 ctx 的最小结构 */
 export type GatewayCommandCtx = {
@@ -117,8 +124,10 @@ export function gatewayStatus(
 ): void {
 	const lock = readLock();
 	const running = isLockValid();
+	const wm = readWatermark(watermarkPath(path.dirname(GATEWAY_LOG_PATH)));
 	ctx.ui.notify(
 		`网关状态: ${running ? `✅ 运行中（PID ${lock?.pid}）` : "未运行"}\n` +
+			`轮询: 间隔 ${getPollIntervalSec(os.homedir())}s、水位 ${wm ? `pos=${wm.position}（${new Date(wm.createTimeMs).toLocaleString()}）` : "无（首启用时间窗重叠）"}\n` +
 			`follow 会话:\n${claims
 				.map((e) => {
 					const age = Math.round(
@@ -129,4 +138,32 @@ export function gatewayStatus(
 				.join("\n") || "- （无）"}`,
 		"info",
 	);
+}
+
+/** /feishu-gateway interval <秒>（T3.1）：10~600 校验 + 持久化，热生效（网关每 tick 重读） */
+export function gatewayInterval(
+	ctx: GatewayCommandCtx,
+	arg: string,
+): void {
+	const sec = Number(arg);
+	const err = validateIntervalSec(sec);
+	if (err || !Number.isFinite(sec)) {
+		ctx.ui.notify(
+			`⚠️ 用法: /feishu-gateway interval <秒>（10~600）。当前: ${getPollIntervalSec(os.homedir())}s`,
+			"warning",
+		);
+		return;
+	}
+	try {
+		setPollIntervalSec(Math.round(sec));
+		ctx.ui.notify(
+			`✅ 轮询间隔已设为 ${Math.round(sec)}s（写入全局 settings.json，网关下一轮热生效，重启保持）`,
+			"info",
+		);
+	} catch (e) {
+		ctx.ui.notify(
+			`❌ 写入失败: ${e instanceof Error ? e.message : String(e)}`,
+			"error",
+		);
+	}
 }

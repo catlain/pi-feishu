@@ -67,6 +67,49 @@ export function parseInboundEvent(
 	};
 }
 
+/** 拉取消息体（im/v1/messages 列表项，2026-08-21 实测：mentions 在顶层且 id 为字符串、sender.{id,sender_type}、message_position） */
+export interface PolledMessageItem {
+	message_id: string;
+	chat_id: string;
+	create_time?: string;
+	/** 服务端单调自增水位（实测严格连续）；旧接口可能缺失 */
+	message_position?: string;
+	parent_id?: string;
+	root_id?: string;
+	deleted?: boolean;
+	msg_type?: string;
+	sender?: { id?: string; id_type?: string; sender_type?: string };
+	body?: { content?: string };
+	mentions?: { key?: string; id?: string; id_type?: string }[];
+}
+
+/** 拉取消息体 → ParsedInbound 适配器（T1.2）：复用现有解析原语，补 messageId/position 元信息 */
+export function parsePolledMessage(
+	item: PolledMessageItem,
+	botOpenId: string,
+): ParsedInbound & { messageId: string; position: number | null } {
+	const isSelfMessage = item.sender?.sender_type === "app";
+	const senderOpenId =
+		item.sender?.id_type === "open_id" || !item.sender?.id_type
+			? item.sender?.id ?? null
+			: null;
+	const mentionedBot = (item.mentions ?? []).some((m) => m.id === botOpenId);
+	const text = stripMentionPlaceholders(extractText(item.body?.content));
+	const createMs = item.create_time ? Number(item.create_time) : null;
+	const position = item.message_position ? Number(item.message_position) : null;
+	return {
+		mentionedBot,
+		senderOpenId,
+		isSelfMessage,
+		chatId: item.chat_id ?? null,
+		text,
+		eventTimeMs: Number.isFinite(createMs) ? createMs : null,
+		parentId: item.parent_id ?? null,
+		messageId: item.message_id,
+		position: Number.isFinite(position) ? position : null,
+	};
+}
+
 /** 白名单校验：open_id 精确匹配，空名单默认拒绝 */
 export function isWhitelisted(
 	senderOpenId: string | null,
