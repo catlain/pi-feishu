@@ -171,8 +171,8 @@ export class WsKeeper {
 			...(this.opts.loggerLevel !== undefined ? { loggerLevel: this.opts.loggerLevel } : {}),
 			// liveness watchdog（SDK ≥1.64.0，官方 commit dc28142）：距上次 ping 后 90s 无任何入站帧
 			// （含 pong）→ 主动 terminate 触发标准重连。⚠️ 必须在构造器 wsConfig 传，start() 参数无效。
-			// 默认关闭（?? 0）；半开连接分钟级无感知 → 90s 内强制重建（根因：go-sdk#224 / node-sdk#164）
-			wsConfig: { pingTimeout: 90 },
+			// 默认关闭（?? 0）；半开连接分钟级无感知 → 240s：须大于服务端 pingInterval(默认120s)+余量——90s 版曾在静默期周期性自杀（watchdog fire→重连→过渡窗丢消息，2026-08-21 01:47 实锤）
+			wsConfig: { pingTimeout: 240 },
 		} as ConstructorParameters<typeof import("@larksuiteoapi/node-sdk").WSClient>[0]);
 		await this.ws.start({
 			eventDispatcher: dispatcher as unknown as EventDispatcher,
