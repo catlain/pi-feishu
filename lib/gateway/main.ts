@@ -20,7 +20,6 @@ import { GATEWAY_LOG_PATH } from "../claim";
 import { initAnchors, recordAnchor } from "./anchors";
 import { createInboundHandler } from "./inbound-handler";
 import { startGatewayOutbox } from "./outbox-drainer";
-import { exportToDoc } from "../doc";
 import { readLock, writeLock, clearLock, isProcessAlive } from "./lifecycle";
 import { WsKeeper } from "./ws-keeper";
 import { startPoller } from "./poller";
@@ -134,7 +133,6 @@ async function main(): Promise<void> {
 			client as never,
 			config.chatId,
 			{
-				exportDoc: (title, text) => exportToDoc(client as never, title, text),
 				log: (msg) => log(msg),
 			},
 		);

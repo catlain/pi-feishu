@@ -24,7 +24,6 @@ afterEach(() => {
 function mkDeps(messageId: string, anchorsPath: string): DrainerDeps {
 	return {
 		sendEntry: async () => ({ sent: true, messageId }),
-		exportDoc: async () => null,
 		recordAnchor: (mid, sid) => recordAnchor(mid, sid, anchorsPath),
 		log: () => {},
 	};
@@ -96,7 +95,6 @@ describe("T4.2 出站→记锚→引用回复路由 全链路", () => {
 
 		const deps: DrainerDeps = {
 			sendEntry: async () => ({ sent: false, error: "net down" }),
-			exportDoc: async () => null,
 			recordAnchor: (mid, sid) => recordAnchor(mid, sid, anchorsPath),
 			log: () => {},
 		};

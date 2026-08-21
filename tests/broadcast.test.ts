@@ -5,19 +5,12 @@ import {
 	buildAskWaitingBody,
 	summarizeQuestions,
 } from "../lib/broadcast";
-import {
-	buildDocTitle,
-	exportToDoc,
-	textToBlocks,
-	truncateForChat,
-} from "../lib/doc";
 import type { FeishuConfig } from "../lib/types";
 import type { OutboxEntry } from "../lib/types";
 
 const config: FeishuConfig = {
 	chatId: "c1",
 	whitelist: [],
-	truncateThreshold: 2000,
 };
 
 /** mock outbox：收集追加的条目 */
@@ -41,7 +34,6 @@ describe("播报（outbox 出站）", () => {
 		const { deps, entries } = mkDeps();
 		const r = broadcastReply(deps, "quant", "短回复");
 		expect(r.sent).toBe(true);
-		expect(r.truncated).toBe(false);
 		expect(entries).toHaveLength(1);
 		expect(entries[0]!.kind).toBe("reply");
 		expect(entries[0]!.expectAck).toBe(false);
@@ -49,17 +41,14 @@ describe("播报（outbox 出站）", () => {
 		expect(entries[0]!.text).toContain("短回复");
 	});
 
-	it("超阈值写 doc-export 条目（摘要 + 标题 + 全文）", () => {
+	it("超长回复不再截断导出，整条直发 reply 条目", () => {
 		const long = "x".repeat(2500);
 		const { deps, entries } = mkDeps();
 		const r = broadcastReply(deps, "quant", long);
-		expect(r.truncated).toBe(true);
+		expect(r.sent).toBe(true);
 		expect(entries).toHaveLength(1);
-		const e = entries[0]!;
-		expect(e.kind).toBe("doc-export");
-		expect(e.docTitle).toMatch(/^\[pi\] quant \d{4}-/);
-		expect(e.docText).toBe(long);
-		expect(e.text).toContain("…（已截断，全文见文档）");
+		expect(entries[0]!.kind).toBe("reply");
+		expect(entries[0]!.text).toBe(`[pi:quant]\n${long}`);
 	});
 
 	it("ask-user 等待提醒写 ask-waiting 条目含摘要", () => {
@@ -131,46 +120,5 @@ describe("播报（outbox 出站）", () => {
 			expect(buildAskWaitingBody("catlain", [{ question: "Q?" }])).toBe("Q?");
 			expect(buildAskWaitingBody("catlain", [])).toBe("AI 正在等待你的选择");
 		});
-	});
-});
-
-describe("doc 工具", () => {
-	it("阈值判断与截断格式", () => {
-		expect(truncateForChat("short", 2000)).toBe("short");
-		const long = truncateForChat("z".repeat(3000), 2000);
-		expect(long).toContain("…（已截断，全文见文档）");
-		expect(long.length).toBeLessThan(2500);
-	});
-
-	it("文档标题格式", () => {
-		const title = buildDocTitle("quant", "主题首行\n正文");
-		expect(title).toMatch(/^\[pi\] quant \d{4}-\d{2}-\d{2} \d{2}:\d{2} 主题首行$/);
-	});
-
-	it("textToBlocks 按段落切分", () => {
-		const blocks = textToBlocks("a\n\nb");
-		expect(blocks).toHaveLength(3);
-		expect(blocks[0]!.text.elements[0]!.textRun.content).toBe("a");
-	});
-
-	it("exportToDoc 成功返回链接", async () => {
-		const client = {
-			docx: {
-				document: { create: vi.fn().mockResolvedValue({ code: 0, data: { document: { document_id: "d9" } } }) },
-				documentBlock: { children: { create: vi.fn().mockResolvedValue({ code: 0 }) } },
-			},
-		} as never;
-		const r = await exportToDoc(client, "t", "content");
-		expect(r.ok).toBe(true);
-		expect(r.url).toContain("d9");
-	});
-
-	it("exportToDoc 失败返回错误", async () => {
-		const client = {
-			docx: { document: { create: vi.fn().mockResolvedValue({ code: 1, msg: "err" }) } },
-		} as never;
-		const r = await exportToDoc(client, "t", "content");
-		expect(r.ok).toBe(false);
-		expect(r.error).toContain("err");
 	});
 });

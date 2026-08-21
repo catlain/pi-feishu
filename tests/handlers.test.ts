@@ -24,7 +24,7 @@ describe("injectFeishuCommand 忙闲分流", () => {
 		return {
 			selfSessionId: "s1",
 			sessionName: () => "a",
-			config: { chatId: "c", whitelist: [], truncateThreshold: 0 },
+			config: { chatId: "c", whitelist: [] },
 			botOpenId: () => null,
 			liveCtx: () => ({ isIdle: () => idle }),
 			sendText: async () => null,

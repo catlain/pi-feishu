@@ -1,10 +1,9 @@
 /**
- * 出站播报 — agent_end 回复推送、ask-user 等待提醒、长回复截断+文档导出
+ * 出站播报 — agent_end 回复推送、ask-user 等待提醒
  * 全双工架构：出站一律写 outbox（网关发送），会话侧纯本地文件 IO，
  * 不再直连飞书 REST（凭据只在网关进程）。
  */
 
-import { buildDocTitle, truncateForChat } from "./doc";
 import { appendOutbox } from "./outbox";
 import type { FeishuConfig } from "./types";
 
@@ -23,7 +22,6 @@ export interface BroadcastDeps {
 export interface BroadcastResult {
 	/** 已写入 outbox 即视为已受理（发送由网关异步完成） */
 	sent: boolean;
-	truncated: boolean;
 }
 
 function append(deps: BroadcastDeps, entry: OutboxAppend): void {
@@ -31,7 +29,7 @@ function append(deps: BroadcastDeps, entry: OutboxAppend): void {
 }
 
 /**
- * 播报 AI 回复到群：带会话名前缀；超阈值截断 + 全文经网关写飞书文档。
+ * 播报 AI 回复到群：带会话名前缀，整条直发（不截断、不导出文档）。
  * 出站写 outbox（fire-and-forget），不感知发送结果。
  */
 export function broadcastReply(
@@ -40,28 +38,14 @@ export function broadcastReply(
 	replyText: string,
 ): BroadcastResult {
 	const { config } = deps;
-	const prefix = `[pi:${sessionName}]`;
-	const threshold = config.truncateThreshold;
+	const prefix = `[pi:${config.sessionName ?? sessionName}]`;
 
-	if (replyText.length <= threshold) {
-		append(deps, {
-			kind: "reply",
-			text: `${prefix}\n${replyText}`,
-			expectAck: false,
-		});
-		return { sent: true, truncated: false };
-	}
-
-	// 长回复：doc-export 条目（网关侧导出文档 + 追加链接）
-	const summary = truncateForChat(replyText, threshold);
 	append(deps, {
-		kind: "doc-export",
-		text: `${prefix}\n${summary}`,
+		kind: "reply",
+		text: `${prefix}\n${replyText}`,
 		expectAck: false,
-		docTitle: buildDocTitle(sessionName, replyText),
-		docText: replyText,
 	});
-	return { sent: true, truncated: true };
+	return { sent: true };
 }
 
 /** 等待输入提醒（rpiv:ask-user:prompt）— text 为去掉会话名前缀的正文 */

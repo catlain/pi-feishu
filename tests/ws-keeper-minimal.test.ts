@@ -121,7 +121,6 @@ describe("onSent 钩子（outbox-drainer 接线）", () => {
 		const calls: number[] = [];
 		const deps: DrainerDeps = {
 			sendEntry: async () => ({ sent: true, messageId: "om_x" }),
-			exportDoc: async () => null,
 			onSent: () => calls.push(1),
 			log: () => {},
 		};

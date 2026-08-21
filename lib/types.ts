@@ -7,8 +7,6 @@ export interface FeishuConfig {
 	chatId: string;
 	/** 允许遥控的 sender open_id 白名单，空数组 = 默认拒绝所有 */
 	whitelist: string[];
-	/** 长回复截断阈值（字符），超过则截断 + 写飞书文档 */
-	truncateThreshold: number;
 	/** 会话名覆盖（不配置时默认取 cwd basename） */
 	sessionName?: string;
 	/** 飞书自建应用凭证（主配置方式，与其他包配置项风格一致） */
@@ -70,9 +68,7 @@ export interface OutboxResult {
 	sent: boolean;
 	/** 飞书 message_id */
 	messageId?: string;
-	/** doc-export 类导出的文档链接 */
-	docUrl?: string;
-	/** 发送/导出失败原因（回写后不再重试） */
+	/** 发送失败原因（回写后不再重试） */
 	error?: string;
 }
 
@@ -80,19 +76,19 @@ export interface OutboxResult {
 export interface OutboxEntry {
 	/** 唯一 id */
 	id: string;
-	/** reply | ask-waiting | topic-head | doc-export */
+	/** reply | ask-waiting | topic-head（遗留文件中可能存在 doc-export，宽容按普通 reply 直发） */
 	kind: "reply" | "ask-waiting" | "topic-head" | "doc-export";
 	/** 会话侧写时间戳 */
 	createdAt: number;
-	/** 发送正文（doc-export 为摘要正文，链接由网关追加） */
+	/** 发送正文 */
 	text: string;
 	/** 需回执：网关发送后回写 result，会话读取后删除 */
 	expectAck: boolean;
 	/** 网关回写的回执（未发送时缺省） */
 	result?: OutboxResult;
-	/** kind=doc-export 时：文档标题 */
+	/** 遗留 doc-export 条目：文档标题（升级前写入，宽容忽略） */
 	docTitle?: string;
-	/** kind=doc-export 时：文档全文 */
+	/** 遗留 doc-export 条目：文档全文（升级前写入，发送时兜底用） */
 	docText?: string;
 }
 

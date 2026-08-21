@@ -30,7 +30,7 @@ afterEach(() => {
 
 function mkDeps(
 	sends: Array<{ text: string }>,
-	opts?: { fail?: boolean; docUrl?: string },
+	opts?: { fail?: boolean },
 ): DrainerDeps {
 	return {
 		sendEntry: async (_e, text) => {
@@ -38,9 +38,6 @@ function mkDeps(
 			if (opts?.fail) return { sent: false, error: "net down" };
 			return { sent: true, messageId: `m${sends.length}` };
 		},
-		exportDoc: opts?.docUrl
-			? async () => ({ ok: true, url: opts.docUrl })
-			: async () => null,
 		log: () => {},
 	};
 }
@@ -136,7 +133,7 @@ describe("drainSession 状态机", () => {
 		expect(readOutboxAll("s1", dir)).toHaveLength(0);
 	});
 
-	it("doc-export：导出成功追加链接 + docUrl 进回执", async () => {
+	it("遗留 doc-export 条目宽容处理：docText 原文整条直发", async () => {
 		const dir = newDir();
 		appendOutbox(
 			"s1",
@@ -150,16 +147,14 @@ describe("drainSession 状态机", () => {
 			dir,
 		);
 		const sends: Array<{ text: string }> = [];
-		await drainSession("s1", mkDeps(sends, { docUrl: "https://feishu.cn/docx/d1" }), dir);
-		expect(sends[0]!.text).toContain("📄 全文: https://feishu.cn/docx/d1");
-		expect(readOutboxAll("s1", dir)[0]!.result?.docUrl).toBe(
-			"https://feishu.cn/docx/d1",
-		);
+		await drainSession("s1", mkDeps(sends), dir);
+		expect(sends[0]!.text).toBe("full");
+		expect(readOutboxAll("s1", dir)[0]!.result).toMatchObject({ sent: true });
 	});
 
-	it("doc-export：无 doc 能力时不追加链接", async () => {
+	it("遗留 doc-export 条目无 docText 时退回 text 直发", async () => {
 		const dir = newDir();
-		appendOutbox("s1", entry({ kind: "doc-export", text: "s", docText: "f" }), dir);
+		appendOutbox("s1", entry({ kind: "doc-export", text: "s" }), dir);
 		const sends: Array<{ text: string }> = [];
 		await drainSession("s1", mkDeps(sends), dir);
 		expect(sends[0]!.text).toBe("s");

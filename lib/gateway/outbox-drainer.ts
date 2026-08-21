@@ -24,8 +24,6 @@ import { recordAnchor } from "./anchors";
 export interface DrainerDeps {
 	/** 统一发送入口：文本 → 飞书 REST（失败不抛出，返回 error） */
 	sendEntry: (entry: OutboxEntry, text: string) => Promise<{ sent: boolean; messageId?: string; error?: string }>;
-	/** 文档导出（无 docx 能力时返回 null） */
-	exportDoc: (title: string, text: string) => Promise<{ ok: boolean; url?: string; error?: string } | null>;
 	/** 发送成功后记录锚点（messageId → sessionId）；缺省不记（测试/旧调用兼容） */
 	recordAnchor?: (messageId: string, sessionId: string) => void;
 	/** 任一发送成功回调（出站观测水位接线，diag 快照用） */
@@ -73,27 +71,17 @@ export async function drainSession(
 	return sent;
 }
 
-/** 组装并发送单个条目：doc-export 类先导出文档再追加链接 */
+/** 组装并发送单个条目：遗留 doc-export 条目宽容处理（docText 原文整条直发） */
 async function sendEntry(
 	entry: OutboxEntry,
 	deps: DrainerDeps,
 ): Promise<OutboxResult> {
-	let text = entry.text;
-	let docUrl: string | undefined;
-	if (entry.kind === "doc-export") {
-		const exported = await deps.exportDoc(entry.docTitle ?? "[pi] 未命名文档", entry.docText ?? entry.text);
-		if (exported?.ok && exported.url) {
-			docUrl = exported.url;
-			text = `${text}\n📄 全文: ${docUrl}`;
-		} else if (exported) {
-			text = `${text}\n⚠️ 文档导出失败（${exported.error}）`;
-		}
-	}
+	// 升级前写入的 doc-export 条目：text 是摘要，docText 是全文 — 整条直发原文
+	const text = entry.kind === "doc-export" ? (entry.docText ?? entry.text) : entry.text;
 	const r = await deps.sendEntry(entry, text);
 	return {
 		sent: r.sent,
 		...(r.messageId ? { messageId: r.messageId } : {}),
-		...(docUrl ? { docUrl } : {}),
 		...(r.error ? { error: r.error } : {}),
 	};
 }
@@ -139,7 +127,6 @@ export function startGatewayOutbox(
 	client: GatewayClientLike,
 	chatId: string,
 	deps: {
-		exportDoc: (title: string, text: string) => Promise<{ ok: boolean; url?: string; error?: string } | null>;
 		/** 任一发送成功回调（出站观测水位接线，diag 快照用） */
 		onSent?: () => void;
 		log: (msg: string) => void;
@@ -166,8 +153,6 @@ export function startGatewayOutbox(
 					return { sent: false, error: err instanceof Error ? err.message : String(err) };
 				}
 			},
-			exportDoc: deps.exportDoc,
-			// 每条出站即锚点（feishu-reply-binding D1）：messageId → sessionId
 			recordAnchor,
 			onSent: deps.onSent,
 			log: deps.log,
