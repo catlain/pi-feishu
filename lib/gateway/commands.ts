@@ -27,29 +27,20 @@ export function findCompetingFeishuClients(excludePid?: number): Array<{ pid: nu
 	let out = "";
 	try {
 		if (process.platform === "win32") {
-			try {
-				out = childProcess
-					.execSync(
-						`wmic process where "name='node.exe'" get ProcessId,CommandLine /format:csv`,
-						{ encoding: "utf-8", timeout: 8000 },
-					)
-					.toString();
-			} catch {
-					// wmic 已从新 Windows 移除 → PowerShell 回退（CSV 输出格式对齐）
-					out = childProcess
-						.execSync(
-							"powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"name='node.exe'\\\" | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation\"",
-							{ encoding: "utf-8", timeout: 15000 },
-						)
-						.toString();
-				}
+			// wmic 已从新 Windows 移除（报错噪音），直接 PowerShell CIM（CSV 输出格式对齐）
+			out = childProcess
+				.execSync(
+					"powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"name='node.exe'\\\" | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation\"",
+					{ encoding: "utf-8", timeout: 15000 },
+				)
+				.toString();
 		} else {
 			out = childProcess
 				.execSync("ps -eo pid,args", { encoding: "utf-8", timeout: 8000 })
 				.toString();
 		}
 	} catch {
-			return []; // 扫描失败不阻塞命令
+		return []; // 扫描失败不阻塞命令
 	}
 	const found: Array<{ pid: number; cmd: string }> = [];
 	for (const line of out.split("\n")) {
