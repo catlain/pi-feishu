@@ -1,10 +1,12 @@
 /**
- * WS 连接管理器 — 基于 SDK 内置重连 + 我们的水位兜底与整体重启
+ * WS 连接管理器 — 基于 SDK 内置 watchdog 判活 + 退避重建
  *
  * SDK WSClient 自带：断线自动重连循环（onReconnecting/onReconnected）、
- * pingTimeout liveness watchdog、terminalError（SDK 放弃）。
+ * pingTimeout liveness watchdog（协议层心跳判活）、terminalError（SDK 放弃）。
  * 我们负责：监听回调（日志+群播报）、SDK terminal 后销毁整个 client
- * 用退避状态机重建（1s×2 封顶 60s）、3 分钟事件水位兜底（SDK 看门狗失效时）。
+ * 用退避状态机重建（1s×2 封顶 60s）、旧 SDK 无快照时事件水位兜底。
+ * D2 帧水位判死已退役：pong 在 SDK 内部处理不触发 dispatcher 帧计数，
+ * 「无入帧」与「连接死」无因果（两次真机静默期误杀实锤）；lastFrameAt 仅观测。
  */
 
 import type { EventDispatcher } from "@larksuiteoapi/node-sdk";
@@ -15,10 +17,10 @@ import {
 	clearLock,
 	type ReconnectState,
 } from "./lifecycle";
+import { DiagReporter, WS_PING_TIMEOUT_S } from "./ws-diagnostics";
 import type { SdkLogger } from "./stdio";
 
-/** 帧水位判死阈值：超过此时长无入站帧且期间有出站成功 → 判死重建 */
-export const FRAME_DEAD_MS = 120_000;
+/** liveness watchdog 超时（秒）：见 ws-diagnostics.ts 的 WS_PING_TIMEOUT_S */
 
 export interface WsKeeperOptions {
 	credentials: { appId: string; appSecret: string };
@@ -31,8 +33,9 @@ export interface WsKeeperOptions {
 	logger?: SdkLogger;
 	/** SDK 日志级别（诊断期 4=debug，定位后移除） */
 	loggerLevel?: number;
-	/** 运行期竞争连接检测（同 app 第二 WS 会随机分流事件）；不传则不监测 */
-	checkCompeting?: () => Array<{ pid: number; cmd: string }>;
+	/** 运行期竞争连接检测（同 app 第二 WS 会随机分流事件）；异步发起、结果经回调交付
+	 * （T2：30s 循环内零同步子进程调用）；不传则不监测 */
+	checkCompeting?: (onResult: (r: Array<{ pid: number; cmd: string }>) => void) => void;
 }
 
 export class WsKeeper {
@@ -42,9 +45,9 @@ export class WsKeeper {
 	private terminal = false; // SDK 已放弃（onError）
 	private startCount = 0;
 	private lastEventAt = Date.now();
-	/** 最近一次入站帧（dispatcher 入口刷新，去重前）— 帧水位优先判活用 */
+	/** 最近一次入站帧（dispatcher 入口刷新，去重前）— 仅观测（diag 快照），不作判据（D2 退役） */
 	private lastFrameAt = Date.now();
-	/** 最近一次出站成功（有出站证明服务端可达，静默期防误判用） */
+	/** 最近一次出站成功 — 仅观测（diag 快照），不作判据（D2 退役） */
 	private lastOutboundAt: number | null = null;
 	private hadConnectedOnce = false;
 	private reconnect: ReconnectState = initReconnectState();
@@ -56,29 +59,17 @@ export class WsKeeper {
 	) {
 		this.sdk = sdk;
 		this.opts = opts;
+		this.diag = new DiagReporter(opts.log);
 	}
 
 	/**
-	 * 综合判活：
-	 * 1. SDK 官方快照优先（connected/reconnecting/connecting → 健康）。
-	 *    ⚠️ 帧水位判死已禁用（FRAME_DEAD_ENV 环境变量才启用）：出站走 REST、入站走 WS，
-	 *    静默期本就无入站帧，「有出站+无入帧=黑洞」不能成立（2026-08-20 真机误杀循环：
-	 *    每 2 分钟静默重建一次）。WS 协议心跳（ping/pong）SDK 日志层不可见，无可靠判据。
-	 * 2. 快照不可用（旧 SDK）→ 回退事件水位（isWsDead，仅旧 SDK 路径，保持历史行为）。
+	 * 综合判活（D2 帧水位判死已退役——pong 在 SDK 内部处理不触发 dispatcher 帧计数，
+	 * 「无入帧」与「连接死」无因果，两次真机静默期误杀实锤）：
+	 * 1. SDK 官方快照（connected/reconnecting/connecting → 健康，failed/idle → 重建）。
+	 * 2. 快照不可用（旧 SDK）→ 回退事件水位（isWsDead，仅旧 SDK 路径）。
 	 */
 	isConnected(now: number): boolean {
 		if (this.terminal || !this.ws) return false;
-		// 实验性帧水位判死：仅环境变量 PI_FEISHU_FRAME_DEAD=1 显式启用
-		if (process.env.PI_FEISHU_FRAME_DEAD === "1" && now - this.lastFrameAt > FRAME_DEAD_MS) {
-			const outboundSinceFrame =
-				this.lastOutboundAt !== null && this.lastOutboundAt > this.lastFrameAt;
-			if (outboundSinceFrame) {
-				this.opts.log(
-					`帧水位判死（实验）：${Math.round((now - this.lastFrameAt) / 1000)}s 无入站帧 → 重建`,
-				);
-				return false;
-			}
-		}
 		const statusFn = (this.ws as { getConnectionStatus?: () => { state?: string } })
 			.getConnectionStatus;
 		if (typeof statusFn === "function") {
@@ -104,16 +95,21 @@ export class WsKeeper {
 	private seenEventIds = new Set<string>();
 	private seenEventIdsRing: string[] = [];
 
-	/** 出站成功回调（main.ts 接线）：刷新出站水位 */
-/** 诊断快照：连接状态/帧水位/启动计数（pong 验证期临时） */
+	/** diag 快照输出器（5 分钟节流常驻观测，T4 转正；实现在 ws-diagnostics.ts） */
+	private diag: DiagReporter;
+
+	/** 健康快照：委托 DiagReporter（节流/watchdog 参数可见性在观测模块） */
 	diagSnapshot(): void {
-		const now = Date.now();
-		const status = (this.ws as unknown as { getConnectionStatus?: () => { state?: string } })?.getConnectionStatus?.();
-		this.opts.log(
-			`[diag] 30s快照: sdkState=${status?.state ?? "?"} terminal=${this.terminal} 距上次入帧=${Math.round((now - this.lastFrameAt) / 1000)}s 距上次出站=${this.lastOutboundAt ? Math.round((now - this.lastOutboundAt) / 1000) : "-"}s start次数=${this.startCount}`,
-		);
+		this.diag.snapshot({
+			terminal: this.terminal,
+			lastFrameAt: this.lastFrameAt,
+			lastOutboundAt: this.lastOutboundAt,
+			startCount: this.startCount,
+			ws: this.ws,
+		});
 	}
 
+	/** 出站成功回调（main.ts 接线）：刷新出站观测水位（diag 快照用） */
 	notifyOutboundOk(): void {
 		this.lastOutboundAt = Date.now();
 	}
@@ -180,10 +176,11 @@ export class WsKeeper {
 			...(this.opts.logger ? { logger: this.opts.logger } : {}),
 			// SDK 类型声明未收录 loggerLevel（运行时支持，真机已验证 debug 帧）；cast 绕过
 			...(this.opts.loggerLevel !== undefined ? { loggerLevel: this.opts.loggerLevel } : {}),
-			// liveness watchdog（SDK ≥1.64.0，官方 commit dc28142）：距上次 ping 后 90s 无任何入站帧
+			// liveness watchdog（SDK ≥1.64.0，官方 commit dc28142）：距上次 ping 后 pingTimeout 秒无任何入站帧
 			// （含 pong）→ 主动 terminate 触发标准重连。⚠️ 必须在构造器 wsConfig 传，start() 参数无效。
-			// 默认关闭（?? 0）；半开连接分钟级无感知 → 240s：须大于服务端 pingInterval(默认120s)+余量——90s 版曾在静默期周期性自杀（watchdog fire→重连→过渡窗丢消息，2026-08-21 01:47 实锤）
-			wsConfig: { pingTimeout: 240 }, // 恢复 240（45 为 pong 验证诊断期临时值）
+			// 默认关闭（?? 0）；须大于服务端 pingInterval(默认120s)+余量——90s 版曾在静默期周期性自杀
+			// （watchdog fire→重连→过渡窗丢消息，2026-08-21 实锤），取 240（见 WS_PING_TIMEOUT_S）
+			wsConfig: { pingTimeout: WS_PING_TIMEOUT_S },
 		} as ConstructorParameters<typeof import("@larksuiteoapi/node-sdk").WSClient>[0]);
 		await this.ws.start({
 			eventDispatcher: dispatcher as unknown as EventDispatcher,
@@ -192,8 +189,15 @@ export class WsKeeper {
 				this.opts.log(`SDK 重连最终失败（terminal）: ${err.message}`);
 			},
 			onReconnecting: () => {
-				// D5：重连中不算「有事件进来」，不刷新帧水位——否则重连风暴会无限掩盖静默
+				// D5：重连中不算「有事件进来」，不刷新观测水位——否则重连风暴会无限掩盖静默
 				this.opts.log("SDK 检测到断开，进入内置重连循环");
+				// T4.2：重连（含 watchdog terminate 触发）即时群播——用户实时区分「重连窗口丢」vs「稳态丢」；
+				// 60s 节流防重连风暴刷屏（SDK 内置循环周期性触发本回调）
+				const now = Date.now();
+				if (now - this.lastReconnectNoticeAt > 60_000) {
+					this.lastReconnectNoticeAt = now;
+					void this.opts.reply("[pi] 网关连接重连中，稍后若未响应请重发");
+				}
 			},
 			onReconnected: () => {
 				this.lastEventAt = Date.now();
@@ -206,6 +210,10 @@ export class WsKeeper {
 		this.lastEventAt = Date.now();
 		this.lastFrameAt = Date.now();
 		this.opts.log("WS 长连接已建立（全机器唯一客户端，SDK 内置重连 + 水位兜底）");
+		// T4.3：启动即打印生效 watchdog 参数——参数倒挂（如 90<120）可被日志一眼发现
+		this.opts.log(
+			`watchdog 参数: pingTimeout=${WS_PING_TIMEOUT_S}s（须 > 服务端 pingInterval 默认 120s，下发值见后续 diag 快照/握手日志）`,
+		);
 		// 启动就绪播报：飞书服务端切到新连接有过渡期（实测可达 4 分钟，期间事件丢弃不重投），
 		// 群里收到本条仅代表出站通，入站真正恢复以能收到指令为准
 		void this.opts.reply("[pi] 网关已就绪（预热中：约 5 分钟内指令可能被丢弃，未响应请重发）");
@@ -214,6 +222,8 @@ export class WsKeeper {
 	/** 启动兜底扫描循环（30s）：SDK terminal 或水位死亡时整体重建；持续失败 30 分钟熔断 */
 	/** 运行期竞争连接监测：发现同 app 其他 WS 客户端即群播警告（5 分钟节流） */
 	private lastCompeteWarnAt = 0;
+	/** 重连群播节流（T4.2：防重连风暴刷屏） */
+	private lastReconnectNoticeAt = 0;
 
 	startReconnectLoop(onGiveup: () => void): void {
 		this.timer = setInterval(() => {
@@ -222,20 +232,23 @@ export class WsKeeper {
 				const connected = this.isConnected(now);
 
 				// 运行期竞争监测（需注入 checkCompeting 回调）：同 app 第二连接会随机分流事件，
-				// 是「时通时不通」的已实锤元凶；只在 on/status 扫一次不够（幽灵进程随时可起）
+				// 是「时通时不通」的已实锤元凶；只在 on/status 扫一次不够（幽灵进程随时可起）。
+				// T2：扫描异步发起，结果经回调群播——循环内无同步子进程调用
 				if (this.opts.checkCompeting && connected && now - this.lastCompeteWarnAt > 300_000) {
-					const rivals = this.opts.checkCompeting();
-					if (rivals.length > 0) {
-						this.lastCompeteWarnAt = now;
-						this.opts.log(
-							`⚠️ 检测到竞争飞书 WS 客户端（${rivals.length} 个）：${rivals.map((r) => `PID ${r.pid}`).join("、")}`,
-						);
-						void this.opts.reply(
-							`[pi] ⚠️ 检测到 ${rivals.length} 个其他飞书 WS 客户端在抢事件（网关时通时不通的元凶），请关闭对应进程：${rivals.map((r) => `PID ${r.pid}`).join("、")}`,
-						);
-					} else {
-						this.lastCompeteWarnAt = now - 240_000; // 无竞争时 1 分钟后再查
-				}
+					this.opts.checkCompeting((rivals: Array<{ pid: number; cmd: string }>) => {
+						const t = Date.now();
+						if (rivals.length > 0) {
+							this.lastCompeteWarnAt = t;
+							this.opts.log(
+								`⚠️ 检测到竞争飞书 WS 客户端（${rivals.length} 个）：${rivals.map((r) => `PID ${r.pid}`).join("、")}`,
+							);
+							void this.opts.reply(
+								`[pi] ⚠️ 检测到 ${rivals.length} 个其他飞书 WS 客户端在抢事件（网关时通时不通的元凶），请关闭对应进程：${rivals.map((r) => `PID ${r.pid}`).join("、")}`,
+							);
+						} else {
+							this.lastCompeteWarnAt = t - 240_000; // 无竞争时 1 分钟后再查
+						}
+					});
 				}
 
 				if (connected && this.reconnect.deadSince !== null) {

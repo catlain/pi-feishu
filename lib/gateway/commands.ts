@@ -19,29 +19,23 @@ export type GatewayCommandCtx = {
 	ui: { notify: (msg: string, type?: "info" | "error" | "warning") => void };
 };
 
-/**
- * 扫描与飞书同 app 抢 WS 事件的竞争进程（验证脚本残留监听器等）。
- * 事件会被服务端随机分发给同 app 的所有 WS 连接 → 网关时通时不通的元凶。
- */
-export function findCompetingFeishuClients(excludePid?: number): Array<{ pid: number; cmd: string }> {
-	let out = "";
-	try {
-		if (process.platform === "win32") {
-			// wmic 已从新 Windows 移除（报错噪音），直接 PowerShell CIM（CSV 输出格式对齐）
-			out = childProcess
-				.execSync(
-					"powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"name='node.exe'\\\" | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation\"",
-					{ encoding: "utf-8", timeout: 15000 },
-				)
-				.toString();
-		} else {
-			out = childProcess
-				.execSync("ps -eo pid,args", { encoding: "utf-8", timeout: 8000 })
-				.toString();
-		}
-	} catch {
-		return []; // 扫描失败不阻塞命令
+/** 扫描命令（win32: PowerShell CIM CSV 输出 / 其他: ps） */
+function scanCommand(): { cmd: string; timeoutMs: number } {
+	if (process.platform === "win32") {
+		// wmic 已从新 Windows 移除（报错噪音），直接 PowerShell CIM（CSV 输出格式对齐）
+		return {
+			cmd: "powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"name='node.exe'\\\" | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation\"",
+			timeoutMs: 15_000,
+		};
 	}
+	return { cmd: "ps -eo pid,args", timeoutMs: 8_000 };
+}
+
+/** 解析扫描输出为竞争进程列表（排除网关本体/自身/excludePid） */
+function parseCompetingClients(
+	out: string,
+	excludePid?: number,
+): Array<{ pid: number; cmd: string }> {
 	const found: Array<{ pid: number; cmd: string }> = [];
 	for (const line of out.split("\n")) {
 		if (!/feishu/i.test(line)) continue;
@@ -52,6 +46,44 @@ export function findCompetingFeishuClients(excludePid?: number): Array<{ pid: nu
 		found.push({ pid: Number(pid), cmd: line.trim().slice(0, 120) });
 	}
 	return found;
+}
+
+/** 同步版（命令路径 on/status 专用：notify 是同步 UI 调用，可容忍扫描等待） */
+export function findCompetingFeishuClients(excludePid?: number): Array<{ pid: number; cmd: string }> {
+	const { cmd, timeoutMs } = scanCommand();
+	let out = "";
+	try {
+		// windowsHide：子进程不建新控制台（弹窗治理；有控制台的父进程也无害）
+		out = childProcess
+			.execSync(cmd, { encoding: "utf-8", timeout: timeoutMs, windowsHide: true })
+			.toString();
+	} catch {
+		return []; // 扫描失败不阻塞命令
+	}
+	return parseCompetingClients(out, excludePid);
+}
+
+/**
+ * 异步版（网关 30s 循环专用）：child_process.exec + 回调交付结果。
+ * 消除 execSync 最长 ~23s 的同步阻塞（探测心跳的机制自己冻心跳）
+ * 与网关 detached 进程内子进程闪窗（windowsHide）。
+ */
+export function findCompetingFeishuClientsAsync(
+	cb: (r: Array<{ pid: number; cmd: string }>) => void,
+	excludePid?: number,
+): void {
+	const { cmd, timeoutMs } = scanCommand();
+	childProcess.exec(
+		cmd,
+		{ encoding: "utf-8", timeout: timeoutMs, windowsHide: true },
+		(err, stdout) => {
+			if (err) {
+				cb([]); // 扫描失败/超时（killed）不阻塞调用方
+				return;
+			}
+			cb(parseCompetingClients(stdout, excludePid));
+		},
+	);
 }
 
 export function gatewayOn(

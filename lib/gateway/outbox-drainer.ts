@@ -28,7 +28,7 @@ export interface DrainerDeps {
 	exportDoc: (title: string, text: string) => Promise<{ ok: boolean; url?: string; error?: string } | null>;
 	/** 发送成功后记录锚点（messageId → sessionId）；缺省不记（测试/旧调用兼容） */
 	recordAnchor?: (messageId: string, sessionId: string) => void;
-	/** 任一发送成功回调（帧水位判活出站侧接线） */
+	/** 任一发送成功回调（出站观测水位接线，diag 快照用） */
 	onSent?: () => void;
 	log: (msg: string) => void;
 }
@@ -140,7 +140,7 @@ export function startGatewayOutbox(
 	chatId: string,
 	deps: {
 		exportDoc: (title: string, text: string) => Promise<{ ok: boolean; url?: string; error?: string } | null>;
-		/** 任一发送成功回调（帧水位判活出站侧接线） */
+		/** 任一发送成功回调（出站观测水位接线，diag 快照用） */
 		onSent?: () => void;
 		log: (msg: string) => void;
 	},

@@ -10,7 +10,7 @@
  */
 
 import * as fs from "node:fs";
-import { findCompetingFeishuClients } from "./commands";
+import { findCompetingFeishuClientsAsync } from "./commands";
 import * as path from "node:path";
 import * as os from "node:os";
 import { getFeishuConfig } from "../config";
@@ -166,14 +166,16 @@ async function main(): Promise<void> {
 		},
 		log,
 		exit: (code) => shutdown(code),
-		// 运行期竞争连接监测（同 app 第二 WS 分流事件是时通时不通实锤元凶）
-		checkCompeting: () => findCompetingFeishuClients(process.pid),
+		// 运行期竞争连接监测（同 app 第二 WS 分流事件是时通时不通实锤元凶）。
+		// T2：异步扫描（exec+回调），30s 循环内零同步子进程调用（execSync 冻结事件循环+弹窗）
+		checkCompeting: (onResult: (r: Array<{ pid: number; cmd: string }>) => void) =>
+			findCompetingFeishuClientsAsync(onResult, process.pid),
 		// SDK logger 注入文件流，SDK 日志不再写 console；trace=5 可见 ping/pong+原始分片组装（诊断「零帧丢失」：
 		// debug 帧只在分片组装成功后打印，组装失败静默——需 trace 层区分「数据没到」vs「到了但 SDK 吞了」）
 		logger: createSdkLogger((line) => logStream.write(`${line}\n`)),
 		loggerLevel: 5,
 	});
-	// 出站成功 → 刷新帧水位判活的出站侧（reply 路径）
+	// 出站成功 → 刷新出站观测水位（diag 快照用，reply 路径）
 	function keeperNotifyOutbound(): void {
 		keeper.notifyOutboundOk();
 	}
@@ -186,7 +188,7 @@ async function main(): Promise<void> {
 		{
 			exportDoc: (title, text) => exportToDoc(client as never, title, text),
 			log: (msg) => log(msg),
-			// 出站成功 → 刷新帧水位判活出站侧（会话播报路径）
+			// 出站成功 → 刷新出站观测水位（diag 快照用，会话播报路径）
 			onSent: () => keeper.notifyOutboundOk(),
 		},
 	);

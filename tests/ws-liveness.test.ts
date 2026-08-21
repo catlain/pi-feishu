@@ -1,103 +1,16 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { WsKeeper, FRAME_DEAD_MS } from "../lib/gateway/ws-keeper";
-import { tickIdle, initIdleState } from "../lib/gateway/lifecycle";
+import { WS_PING_TIMEOUT_S } from "../lib/gateway/ws-diagnostics";
+import {
+	tickIdle,
+	initIdleState,
+	WS_DEAD_AFTER_MS,
+} from "../lib/gateway/lifecycle";
 import { drainSession, type DrainerDeps } from "../lib/gateway/outbox-drainer";
 import { appendOutbox } from "../lib/outbox";
-
-/** 构造带 stub SDK 的 WsKeeper（不真连 WS） */
-function mkKeeper() {
-	const startCalls: unknown[] = [];
-	const dispatcherReg: Record<string, (data: unknown) => Promise<void>> = {};
-	const sdk = {
-		EventDispatcher: class {
-			register(ev: typeof dispatcherReg) {
-				Object.assign(dispatcherReg, ev);
-				return this;
-			}
-		},
-		WSClient: class {
-			constructor(_opts: unknown) {
-				startCalls.push(_opts);
-			}
-			async start(_opts: unknown) {
-				/* noop */
-			}
-			close() {
-				/* noop */
-			}
-			getConnectionStatus() {
-				return { state: "connected" }; // 对齐真实 SDK 1.73（有快照方法）
-			}
-		},
-	} as unknown as typeof import("@larksuiteoapi/node-sdk");
-	const logs: string[] = [];
-	const keeper = new WsKeeper(sdk, {
-		credentials: { appId: "a", appSecret: "s" },
-		onMessage: () => {},
-		reply: async () => {},
-		log: (m) => logs.push(m),
-		exit: () => {},
-	});
-	return { keeper, dispatcherReg, logs, startCalls };
-}
-
-describe("帧水位判活（D2，默认禁用、PI_FEISHU_FRAME_DEAD=1 启用）", () => {
-	afterEach(() => {
-		vi.useRealTimers();
-		delete process.env.PI_FEISHU_FRAME_DEAD;
-	});
-
-	it("黑洞 + 有出站 → 判死（仅显式启用时）", async () => {
-		vi.useFakeTimers();
-		process.env.PI_FEISHU_FRAME_DEAD = "1";
-		const { keeper, dispatcherReg } = mkKeeper();
-		await keeper.start();
-		// 初始健康（刚 start，帧水位新鲜）
-		expect(keeper.isConnected(Date.now())).toBe(true);
-		// 前进超过阈值，期间有出站成功
-		const t2 = Date.now() + FRAME_DEAD_MS + 1000;
-		vi.setSystemTime(t2);
-		keeper.notifyOutboundOk();
-		expect(keeper.isConnected(t2)).toBe(false);
-	});
-
-	it("默认禁用：黑洞 + 有出站 → 不判死（防静默期误杀循环）", async () => {
-		vi.useFakeTimers();
-		delete process.env.PI_FEISHU_FRAME_DEAD;
-		const { keeper } = mkKeeper();
-		await keeper.start();
-		const t2 = Date.now() + FRAME_DEAD_MS + 1000;
-		vi.setSystemTime(t2);
-		keeper.notifyOutboundOk();
-		expect(keeper.isConnected(t2)).toBe(true); // SDK 快照 connected → 健康
-	});
-
-	it("纯静默（无出站）→ 不判死", async () => {
-		vi.useFakeTimers();
-		const { keeper } = mkKeeper();
-		await keeper.start();
-		const t2 = Date.now() + FRAME_DEAD_MS + 600_000; // 远超阈值但无出站
-		vi.setSystemTime(t2);
-		expect(keeper.isConnected(t2)).toBe(true);
-	});
-
-	it("有帧持续刷新 → 永不判死", async () => {
-		vi.useFakeTimers();
-		const { keeper, dispatcherReg } = mkKeeper();
-		await keeper.start();
-		// 每分钟来一帧
-		let now = Date.now();
-		for (let i = 0; i < 5; i++) {
-			now += 60_000;
-			vi.setSystemTime(now);
-			await dispatcherReg["im.message.receive_v1"]?.({ header: { event_id: `e${i}` } });
-			expect(keeper.isConnected(now)).toBe(true);
-		}
-	});
-});
+import { mkKeeper } from "./helpers/mk-keeper";
 
 describe("重建原子性（D1）", () => {
 	it("start() 复调：旧 client 有 close 则调用并置空", async () => {
@@ -111,7 +24,9 @@ describe("重建原子性（D1）", () => {
 		const { keeper, startCalls } = mkKeeper();
 		await keeper.start();
 		const ctorOpts = startCalls[0] as { wsConfig?: { pingTimeout?: number } };
-		expect([45, 240]).toContain(ctorOpts?.wsConfig?.pingTimeout); // 诊断期 45，验证后恢复 240
+		// 诊断期 45 已退役，恒为 240（须 > 服务端 pingInterval 默认 120s）
+		expect(ctorOpts?.wsConfig?.pingTimeout).toBe(240);
+		expect(ctorOpts?.wsConfig?.pingTimeout).toBe(WS_PING_TIMEOUT_S);
 	});
 });
 
@@ -126,20 +41,35 @@ describe("D3 自退冻结：连接不健康时不推进 tickIdle", () => {
 	});
 });
 
-describe("D5 重连不刷新帧水位", () => {
-	it("onReconnecting 回调不触碰 lastFrameAt（启用判死时验证）", async () => {
-		// 间接验证：start opts 中的 onReconnecting 被调用后，静默期依旧判死（有出站时）
+describe("D5 重连不刷新事件水位（D2 帧水位判死已退役，旧 SDK 水位回退路径验证）", () => {
+	it("onReconnecting 回调不触碰 lastEventAt；真事件到达才恢复", async () => {
+		vi.useFakeTimers();
+		const { keeper, startOpts, dispatcherReg } = mkKeeper({ legacySdk: true });
+		await keeper.start();
+		const t2 = Date.now() + WS_DEAD_AFTER_MS + 1000;
+		vi.setSystemTime(t2);
+		startOpts[0]?.onReconnecting?.(); // 模拟重连风暴
+		expect(keeper.isConnected(t2)).toBe(false); // 水位过期仍判死 → 不被重连回调掩盖
+		// 对照：真事件到达 → 刷新水位恢复健康
+		await dispatcherReg["im.message.receive_v1"]?.({ header: { event_id: "e1" } });
+		expect(keeper.isConnected(t2)).toBe(true);
+		vi.useRealTimers();
+	});
+
+	it("帧水位判死分支已删除：PI_FEISHU_FRAME_DEAD 不再影响判活（spec 帧水位退役场景的行为级兜底）", async () => {
 		vi.useFakeTimers();
 		process.env.PI_FEISHU_FRAME_DEAD = "1";
-		const { keeper, startCalls } = mkKeeper();
-		await keeper.start();
-		const opts = startCalls[0] as { onReconnecting?: () => void };
-		const t2 = Date.now() + FRAME_DEAD_MS + 1000;
-		vi.setSystemTime(t2);
-		opts.onReconnecting?.(); // 模拟重连风暴
-		keeper.notifyOutboundOk();
-		expect(keeper.isConnected(t2)).toBe(false); // 仍判死 → 不会被重连回调掩盖
-		delete process.env.PI_FEISHU_FRAME_DEAD;
+		try {
+			const { keeper } = mkKeeper();
+			await keeper.start();
+			const t2 = Date.now() + 300_000;
+			vi.setSystemTime(t2);
+			keeper.notifyOutboundOk(); // 黑洞 + 有出站：曾判死，现在仅 SDK 快照说了算
+			expect(keeper.isConnected(t2)).toBe(true);
+		} finally {
+			delete process.env.PI_FEISHU_FRAME_DEAD;
+			vi.useRealTimers();
+		}
 	});
 });
 
