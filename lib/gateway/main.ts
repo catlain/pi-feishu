@@ -2,9 +2,11 @@
  * 网关进程入口 — 全机器唯一飞书 WS 客户端（pi-feishu-gateway）
  *
  * 无 LLM、无会话。职责：入站解析、@bot 检测、白名单校验、
- * 会话名路由（claim 心跳判活）、list 仲裁、错误回报、pending 分发、
- * 空闲自退（10 分钟无存活心跳）。
- * WS 断线检测与自动重连见 ws-keeper.ts。
+ * 会话名路由（claim 心跳判活）、list 仲裁、错误回报、pending 分发。
+ * WS 连接管理全权交 SDK（断线自愈/判活均由 SDK 内置机制负责）；
+ * 网关常驻不自退（D3：退出仅由用户显式操作触发）。
+ * 日志：业务日志走 gateway.log 文件流；SDK 默认 console 日志由
+ * spawn 层 stdio 重定向写入同一文件（D1，单一日志流）。
  *
  * 运行：`pi-feishu-gateway`（npm bin）或会话扩展 `/feishu-gateway on` 派生。
  */
@@ -18,32 +20,24 @@ import { getCredentials } from "../credentials";
 import { readClaims, isAlive, GATEWAY_LOG_PATH } from "../claim";
 import { initAnchors, recordAnchor } from "./anchors";
 import { writePending as writePendingFile } from "../pending";
-import { parseInboundEvent } from "../events";
+import { parseInboundEvent, isWhitelisted } from "../events";
 import { gatewayRoute } from "./route";
 import { startGatewayOutbox } from "./outbox-drainer";
 import { exportToDoc } from "../doc";
-import { readLock, writeLock, clearLock, initIdleState, tickIdle, isProcessAlive } from "./lifecycle";
+import { readLock, writeLock, clearLock, isProcessAlive } from "./lifecycle";
 import { WsKeeper } from "./ws-keeper";
-import { createSdkLogger, noopStdio } from "./stdio";
 import type { FeishuMessageEvent } from "../types";
 
-const SCAN_INTERVAL_MS = 30_000;
-
-// ── 日志：gateway.log，启动截断 ──
+// ── 日志：gateway.log（追加模式，与 spawn 层 SDK stdio 重定向同文件、单一日志流）──
 fs.mkdirSync(path.dirname(GATEWAY_LOG_PATH), { recursive: true });
-const logStream = fs.createWriteStream(GATEWAY_LOG_PATH, { flags: "w" });
+const logStream = fs.createWriteStream(GATEWAY_LOG_PATH, { flags: "a" });
 function log(msg: string): void {
 	logStream.write(`[${new Date().toISOString()}] ${msg}\n`);
 }
 
-// stdio 隔离：任何 console 写入不再触死管道（EPIPE 根治）
-noopStdio();
+// 启动分隔符：追加模式下便于区分多次运行
+logStream.write(`\n===== pi-feishu-gateway 启动 ${new Date().toISOString()} =====\n`);
 
-
-function shutdown(code: number): void {
-	logStream.end();
-	process.exit(code);
-}
 
 async function main(): Promise<void> {
 	const config = getFeishuConfig(os.homedir());
@@ -156,31 +150,14 @@ async function main(): Promise<void> {
 		}
 	}
 
-	// ── 唯一 WS 连接（断线检测/重连见 ws-keeper） ──
+	// ── 唯一 WS 连接（断线自愈由 SDK 内置重连负责）──
 	const keeper = new WsKeeper(sdk, {
 		credentials,
 		onMessage,
-		reply: (text) => {
-			keeperNotifyOutbound();
-			return reply(text);
-		},
+		reply: (text) => reply(text),
 		log,
-		exit: (code) => shutdown(code),
-		// 运行期竞争连接监测（同 app 第二 WS 分流事件是时通时不通实锤元凶）。
-		// T2：异步扫描（exec+回调），30s 循环内零同步子进程调用（execSync 冻结事件循环+弹窗）
-		checkCompeting: (onResult: (r: Array<{ pid: number; cmd: string }>) => void) =>
-			findCompetingFeishuClientsAsync(onResult, process.pid),
-		// SDK logger 注入文件流，SDK 日志不再写 console；trace=5 可见 ping/pong+原始分片组装（诊断「零帧丢失」：
-		// debug 帧只在分片组装成功后打印，组装失败静默——需 trace 层区分「数据没到」vs「到了但 SDK 吞了」）
-		logger: createSdkLogger((line) => logStream.write(`${line}\n`)),
-		loggerLevel: 5,
 	});
-	// 出站成功 → 刷新出站观测水位（diag 快照用，reply 路径）
-	function keeperNotifyOutbound(): void {
-		keeper.notifyOutboundOk();
-	}
 	await keeper.start();
-	keeper.startReconnectLoop(() => shutdown(1));
 
 	startGatewayOutbox(
 		client as never,
@@ -188,34 +165,24 @@ async function main(): Promise<void> {
 		{
 			exportDoc: (title, text) => exportToDoc(client as never, title, text),
 			log: (msg) => log(msg),
-			// 出站成功 → 刷新出站观测水位（diag 快照用，会话播报路径）
-			onSent: () => keeper.notifyOutboundOk(),
 		},
 	);
 	log("outbox-drainer 已启动（重启重放：遗留条目将按 FIFO 补发，过期 ask-waiting 丢弃）");
 
-	// ── 空闲自退扫描 ──
-	const idle = initIdleState();
-	const timer = setInterval(() => {
-		try {
-			// 诊断快照：每 30s 一行连接健康摘要（pong 验证期临时，定位后移除）
-			keeper.diagSnapshot();
-			const claims = readClaims();
-			const anyAlive = Object.values(claims).flat().some((e) => isAlive(e));
-			// D3：仅「连接健康且无存活 claim」才推进自退；黑洞/重建期冻结计时，防网关在恢复窗口内消失
-			if (keeper.isConnected(Date.now()) && keeper.connectedOnce() && tickIdle(idle, anyAlive)) {
-				log("所有会话离线超过 10 分钟，自退");
-				clearInterval(timer);
-				keeper.stop();
-				void reply("[pi] 所有会话离线，网关关闭").finally(() => {
-					clearLock();
-					shutdown(0);
-				});
-			}
-		} catch (err) {
-			log(`心跳扫描异常: ${err instanceof Error ? err.message : String(err)}`);
+	// ── 启动时竞争扫描告警（一次）：同 app 第二 WS 会随机分流事件，是「时通时不通」的实锤元凶。
+	// 常驻循环已随 keeper 循环退役；命令路径（on/status）仍有同步扫描。
+	findCompetingFeishuClientsAsync((rivals) => {
+		if (rivals.length > 0) {
+			log(
+				`⚠️ 检测到竞争飞书 WS 客户端（${rivals.length} 个）：${rivals.map((r) => `PID ${r.pid}`).join("、")}`,
+			);
+			void reply(
+				`[pi] ⚠️ 检测到 ${rivals.length} 个其他飞书 WS 客户端在抢事件（网关时通时不通的元凶），请关闭对应进程：${rivals.map((r) => `PID ${r.pid}`).join("、")}`,
+			);
 		}
-	}, SCAN_INTERVAL_MS);
+	}, process.pid);
+
+	log("网关常驻运行（无自退；停止用 /feishu-gateway off）");
 }
 
 process.on("uncaughtException", (err) => {

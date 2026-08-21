@@ -35,13 +35,11 @@ function stubExec(result: { err?: Error; stdout: string }): void {
 
 describe("findCompetingFeishuClients — 同 app 竞争 WS 客户端扫描", () => {
 	it("检测到 feishu 相关进程（排除网关本体）", () => {
-		mockExecSync.mockReturnValue(
-			(
-				"node.exe,scripts/t1-verify.mjs listen --feishu,14600\n" +
+		mockExecSync.mockReturnValue(Buffer.from(
+			"node.exe,scripts/t1-verify.mjs listen --feishu,14600\n" +
 				"node.exe,C:\\x\\pi-feishu\\bin\\pi-feishu-gateway.js,7348\n" +
-				"node.exe,pi-feishu\\bin\\pi-feishu-gateway.js,999\n"
-			) as unknown as Buffer,
-		);
+				"node.exe,pi-feishu\\bin\\pi-feishu-gateway.js,999\n",
+		));
 		const found = findCompetingFeishuClients(7348);
 		expect(found).toHaveLength(1);
 		expect(String(found[0]?.cmd)).toContain("t1-verify");
@@ -55,7 +53,7 @@ describe("findCompetingFeishuClients — 同 app 竞争 WS 客户端扫描", () 
 
 	it("无 feishu 相关进程 → 空", () => {
 		mockExecSync.mockReturnValue(
-			"node.exe,vite,1234\nnode.exe,pi main,5678\n" as unknown as Buffer,
+			Buffer.from("node.exe,vite,1234\nnode.exe,pi main,5678\n"),
 		);
 		expect(findCompetingFeishuClients()).toEqual([]);
 	});

@@ -104,13 +104,26 @@ export function gatewayOn(
 		clearLock();
 		ctx.ui.notify(`检测到残留锁（PID ${lock.pid} 已不存在），已作废`, "info");
 	}
-	// 派生 detach 孤儿进程：直接跑 bin 启动器（node + jiti），stdio 全部 ignore（网关内日志走文件流，父 fd 管道已死会 EPIPE）
-	fs.mkdirSync(CLAIM_DIR, { recursive: true });
+	// 派生 detach 孤儿进程：直接跑 bin 启动器（node + jiti）。
+	// stdio 重定向（D1）：stdout/stderr 追加到 gateway.log，SDK 默认 console 日志在进程层面被捕获（零注入）；
+	// windowsHide：不建新控制台（弹窗治理）
+	fs.mkdirSync(path.dirname(GATEWAY_LOG_PATH), { recursive: true });
+	const out = fs.openSync(GATEWAY_LOG_PATH, "a");
+	const err = fs.openSync(GATEWAY_LOG_PATH, "a");
 	const launcher = path.resolve(__dirname, "../../bin/pi-feishu-gateway.js");
 	const child = childProcess.spawn(process.execPath, [launcher], {
 		detached: true,
-		stdio: "ignore",
+		stdio: ["ignore", out, err],
 		windowsHide: true,
+	});
+	child.on("spawn", () => {
+		// 句柄已继承给子进程，父侧可关闭（Windows 下 spawn 同步传 fd，可立即关）
+		fs.closeSync(out);
+		fs.closeSync(err);
+	});
+	child.on("error", () => {
+		try { fs.closeSync(out); } catch { /* 已关 */ }
+		try { fs.closeSync(err); } catch { /* 已关 */ }
 	});
 	child.unref();
 	ctx.ui.notify(`✅ 网关已启动（PID ${child.pid}），日志: ${GATEWAY_LOG_PATH}`, "info");
