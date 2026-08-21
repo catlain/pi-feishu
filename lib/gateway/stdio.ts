@@ -7,6 +7,9 @@
  */
 
 export interface SdkLogger {
+	/** trace 级（ping/pong 心跳等）——⚠️ 必须实现：缺此方法时 SDK 心跳路径抛 TypeError，
+	 * pong 永远「收不到」→ watchdog 周期性误杀 → 重连循环同抛卡死（2026-08-21 实锤） */
+	trace: (msg: string) => void;
 	debug: (msg: string) => void;
 	info: (msg: string) => void;
 	warn: (msg: string) => void;
@@ -20,6 +23,7 @@ export function createSdkLogger(
 	const emit = (level: string, msg: string): void =>
 		write(`[${new Date().toISOString()}] [sdk:${level}] ${String(msg)}`);
 	return {
+		trace: (m) => emit("trace", m),
 		debug: (m) => emit("debug", m),
 		info: (m) => emit("info", m),
 		warn: (m) => emit("warn", m),

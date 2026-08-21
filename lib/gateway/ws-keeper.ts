@@ -183,7 +183,7 @@ export class WsKeeper {
 			// liveness watchdog（SDK ≥1.64.0，官方 commit dc28142）：距上次 ping 后 90s 无任何入站帧
 			// （含 pong）→ 主动 terminate 触发标准重连。⚠️ 必须在构造器 wsConfig 传，start() 参数无效。
 			// 默认关闭（?? 0）；半开连接分钟级无感知 → 240s：须大于服务端 pingInterval(默认120s)+余量——90s 版曾在静默期周期性自杀（watchdog fire→重连→过渡窗丢消息，2026-08-21 01:47 实锤）
-			wsConfig: { pingTimeout: 45 }, // 诊断期 45s：快速观察 watchdog 行为，验证完恢复 240
+			wsConfig: { pingTimeout: 240 }, // 恢复 240（45 为 pong 验证诊断期临时值）
 		} as ConstructorParameters<typeof import("@larksuiteoapi/node-sdk").WSClient>[0]);
 		await this.ws.start({
 			eventDispatcher: dispatcher as unknown as EventDispatcher,
