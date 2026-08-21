@@ -1,28 +1,25 @@
 /**
- * 网关生命周期命令 — /feishu-gateway on|off|status 的实现
+ * 网关生命周期命令 — /feishu-gateway on|off|status 的实现（极简版）
+ *
+ * on：只负责拉起网关进程（不管竞态、不管单例锁——off 会全量清理）。
+ * off：扫描并杀掉所有飞书网关进程（含历史残留的多实例）。
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as childProcess from "node:child_process";
 import type { ClaimEntry } from "../types";
-import { isAlive, CLAIM_DIR, GATEWAY_LOG_PATH } from "../claim";
-import {
-	readLock,
-	isLockValid,
-	isProcessAlive,
-	clearLock,
-} from "./lifecycle";
+import { isAlive, GATEWAY_LOG_PATH } from "../claim";
+import { readLock, isLockValid } from "./lifecycle";
 
 /** 命令 ctx 的最小结构 */
 export type GatewayCommandCtx = {
 	ui: { notify: (msg: string, type?: "info" | "error" | "warning") => void };
 };
 
-/** 扫描命令（win32: PowerShell CIM CSV 输出 / 其他: ps） */
+/** 扫描命令（win32: PowerShell CIM CSV / 其他: ps） */
 function scanCommand(): { cmd: string; timeoutMs: number } {
 	if (process.platform === "win32") {
-		// wmic 已从新 Windows 移除（报错噪音），直接 PowerShell CIM（CSV 输出格式对齐）
 		return {
 			cmd: "powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"name='node.exe'\\\" | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation\"",
 			timeoutMs: 15_000,
@@ -31,59 +28,32 @@ function scanCommand(): { cmd: string; timeoutMs: number } {
 	return { cmd: "ps -eo pid,args", timeoutMs: 8_000 };
 }
 
-/** 解析扫描输出为竞争进程列表（排除网关本体/自身/excludePid） */
-function parseCompetingClients(
+/** 解析扫描输出 → 全部网关进程 PID（排除自身；不区分新旧，off 全杀） */
+export function parseGatewayPids(
 	out: string,
-	excludePid?: number,
-): Array<{ pid: number; cmd: string }> {
-	const found: Array<{ pid: number; cmd: string }> = [];
+	selfPid: number = process.pid,
+): number[] {
+	const pids: number[] = [];
 	for (const line of out.split("\n")) {
-		if (!/feishu/i.test(line)) continue;
-		// 网关本体（含软链路径差异）排除；本进程排除
-		if (/pi-feishu-gateway(\\|\/|\.js|$)/.test(line)) continue;
-		const pid = /(?:^|,)(\d+)\s*$/.exec(line.trim())?.[1];
-		if (!pid || Number(pid) === process.pid || Number(pid) === excludePid) continue;
-		found.push({ pid: Number(pid), cmd: line.trim().slice(0, 120) });
+		if (!/pi-feishu-gateway(\.js)?/.test(line)) continue;
+		const pid = /^"(\d+)"/.exec(line.trim())?.[1];
+		if (!pid || Number(pid) === selfPid) continue;
+		pids.push(Number(pid));
 	}
-	return found;
+	return pids;
 }
 
-/** 同步版（命令路径 on/status 专用：notify 是同步 UI 调用，可容忍扫描等待） */
-export function findCompetingFeishuClients(excludePid?: number): Array<{ pid: number; cmd: string }> {
+/** 同步扫描全部网关进程 PID（off 命令专用；扫描失败返回空） */
+function findGatewayPids(): number[] {
 	const { cmd, timeoutMs } = scanCommand();
-	let out = "";
 	try {
-		// windowsHide：子进程不建新控制台（弹窗治理；有控制台的父进程也无害）
-		out = childProcess
+		const out = childProcess
 			.execSync(cmd, { encoding: "utf-8", timeout: timeoutMs, windowsHide: true })
 			.toString();
+		return parseGatewayPids(out);
 	} catch {
-		return []; // 扫描失败不阻塞命令
+		return [];
 	}
-	return parseCompetingClients(out, excludePid);
-}
-
-/**
- * 异步版（网关 30s 循环专用）：child_process.exec + 回调交付结果。
- * 消除 execSync 最长 ~23s 的同步阻塞（探测心跳的机制自己冻心跳）
- * 与网关 detached 进程内子进程闪窗（windowsHide）。
- */
-export function findCompetingFeishuClientsAsync(
-	cb: (r: Array<{ pid: number; cmd: string }>) => void,
-	excludePid?: number,
-): void {
-	const { cmd, timeoutMs } = scanCommand();
-	childProcess.exec(
-		cmd,
-		{ encoding: "utf-8", timeout: timeoutMs, windowsHide: true },
-		(err, stdout) => {
-			if (err) {
-				cb([]); // 扫描失败/超时（killed）不阻塞调用方
-				return;
-			}
-			cb(parseCompetingClients(stdout, excludePid));
-		},
-	);
 }
 
 export function gatewayOn(
@@ -93,16 +63,6 @@ export function gatewayOn(
 	if (!hasCredentials) {
 		ctx.ui.notify("⚠️ 缺少飞书凭证，无法启动网关", "warning");
 		return;
-	}
-	const lock = readLock();
-	if (lock && isProcessAlive(lock.pid)) {
-		ctx.ui.notify(`网关已运行（PID ${lock.pid}）`, "info");
-		warnCompeting(ctx, lock.pid);
-		return;
-	}
-	if (lock) {
-		clearLock();
-		ctx.ui.notify(`检测到残留锁（PID ${lock.pid} 已不存在），已作废`, "info");
 	}
 	// 派生 detach 孤儿进程：直接跑 bin 启动器（node + jiti）。
 	// stdio 重定向（D1）：stdout/stderr 追加到 gateway.log，SDK 默认 console 日志在进程层面被捕获（零注入）；
@@ -117,7 +77,6 @@ export function gatewayOn(
 		windowsHide: true,
 	});
 	child.on("spawn", () => {
-		// 句柄已继承给子进程，父侧可关闭（Windows 下 spawn 同步传 fd，可立即关）
 		fs.closeSync(out);
 		fs.closeSync(err);
 	});
@@ -127,43 +86,29 @@ export function gatewayOn(
 	});
 	child.unref();
 	ctx.ui.notify(`✅ 网关已启动（PID ${child.pid}），日志: ${GATEWAY_LOG_PATH}`, "info");
-	warnCompeting(ctx, child.pid);
-}
-
-/** 发现同 app 竞争 WS 连接时提示用户（事件会被分流，网关时通时不通） */
-function warnCompeting(ctx: GatewayCommandCtx, gatewayPid?: number): void {
-	const rivals = findCompetingFeishuClients(gatewayPid);
-	if (rivals.length === 0) return;
-	ctx.ui.notify(
-		`⚠️ 检测到 ${rivals.length} 个其他飞书 WS 客户端进程（验证脚本残留等），会抢走网关事件导致时通时不通：\n` +
-			rivals.map((r) => `- PID ${r.pid}: ${r.cmd}`).join("\n") +
-			"\n建议：taskkill //PID <pid> //F 清理后重试",
-		"warning",
-	);
 }
 
 export function gatewayOff(ctx: GatewayCommandCtx): void {
-	const lock = readLock();
-	if (!lock) {
+	const pids = findGatewayPids();
+	if (pids.length === 0) {
 		ctx.ui.notify("网关未运行", "info");
 		return;
 	}
-	if (!isProcessAlive(lock.pid)) {
-		clearLock();
-		ctx.ui.notify("网关进程已不存在，锁已清除", "info");
-		return;
+	const killed: number[] = [];
+	for (const pid of pids) {
+		try {
+			process.kill(pid);
+			killed.push(pid);
+		} catch {
+			// 已死或无权限，跳过
+		}
 	}
-	try {
-		process.kill(lock.pid);
-		ctx.ui.notify(`网关已停止（PID ${lock.pid}）`, "info");
-	} catch (err) {
-		ctx.ui.notify(
-			`停止失败: ${err instanceof Error ? err.message : String(err)}`,
-			"error",
-		);
-		return;
-	}
-	clearLock();
+	ctx.ui.notify(
+		killed.length > 0
+			? `网关已停止（PID ${killed.join("、")}）`
+			: "网关进程已不存在",
+		"info",
+	);
 }
 
 export function gatewayStatus(
@@ -172,7 +117,6 @@ export function gatewayStatus(
 ): void {
 	const lock = readLock();
 	const running = isLockValid();
-	warnCompeting(ctx, lock?.pid);
 	ctx.ui.notify(
 		`网关状态: ${running ? `✅ 运行中（PID ${lock?.pid}）` : "未运行"}\n` +
 			`follow 会话:\n${claims

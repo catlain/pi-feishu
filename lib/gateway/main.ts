@@ -12,7 +12,6 @@
  */
 
 import * as fs from "node:fs";
-import { findCompetingFeishuClientsAsync } from "./commands";
 import * as path from "node:path";
 import * as os from "node:os";
 import { getFeishuConfig } from "../config";
@@ -168,19 +167,6 @@ async function main(): Promise<void> {
 		},
 	);
 	log("outbox-drainer 已启动（重启重放：遗留条目将按 FIFO 补发，过期 ask-waiting 丢弃）");
-
-	// ── 启动时竞争扫描告警（一次）：同 app 第二 WS 会随机分流事件，是「时通时不通」的实锤元凶。
-	// 常驻循环已随 keeper 循环退役；命令路径（on/status）仍有同步扫描。
-	findCompetingFeishuClientsAsync((rivals) => {
-		if (rivals.length > 0) {
-			log(
-				`⚠️ 检测到竞争飞书 WS 客户端（${rivals.length} 个）：${rivals.map((r) => `PID ${r.pid}`).join("、")}`,
-			);
-			void reply(
-				`[pi] ⚠️ 检测到 ${rivals.length} 个其他飞书 WS 客户端在抢事件（网关时通时不通的元凶），请关闭对应进程：${rivals.map((r) => `PID ${r.pid}`).join("、")}`,
-			);
-		}
-	}, process.pid);
 
 	log("网关常驻运行（无自退；停止用 /feishu-gateway off）");
 }
