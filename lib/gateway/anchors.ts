@@ -16,8 +16,8 @@ import { CLAIM_DIR } from "../claim";
 
 export const ANCHORS_PATH = path.join(CLAIM_DIR, "anchors.json");
 
-/** 内存表（启动时从 anchors.json 恢复） */
-let table: Map<string, string> = new Map();
+/** 内存表（启动时从 anchors.json 恢复）；值为 [sessionId, recordedAt] */
+let table = new Map<string, [string, number]>();
 
 /** 条目：messageId → { sessionId, recordedAt } */
 interface AnchorFile {
@@ -33,7 +33,8 @@ export function initAnchors(filePath = ANCHORS_PATH): void {
 		if (data && typeof data === "object") {
 			for (const [mid, v] of Object.entries(data)) {
 				if (v && typeof v.sessionId === "string") {
-					table.set(mid, v.sessionId);
+					// 保留原始记录时间（旧 bug：全量重写刷掉 recordedAt，丢失取证能力）
+					table.set(mid, [v.sessionId, typeof v.recordedAt === "number" ? v.recordedAt : 0]);
 				}
 			}
 		}
@@ -49,20 +50,20 @@ export function recordAnchor(
 	filePath = ANCHORS_PATH,
 ): void {
 	if (!messageId || !sessionId) return;
-	table.set(messageId, sessionId);
+	table.set(messageId, [sessionId, Date.now()]);
 	persist(filePath);
 }
 
 /** 查询锚点：返回 sessionId，未命中返回 null（孤儿锚点无害，判活由调用方联合 claim 完成） */
 export function lookupAnchor(messageId: string): string | null {
-	return table.get(messageId) ?? null;
+	return table.get(messageId)?.[0] ?? null;
 }
 
-/** 持久化到文件（tmp + rename 原子写） */
+/** 持久化到文件（tmp + rename 原子写；保留各条原始 recordedAt，不全量刷新） */
 function persist(filePath: string): void {
 	const data: AnchorFile = {};
-	for (const [mid, sid] of table) {
-		data[mid] = { sessionId: sid, recordedAt: Date.now() };
+	for (const [mid, [sid, at]] of table) {
+		data[mid] = { sessionId: sid, recordedAt: at };
 	}
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	const tmpPath = `${filePath}.tmp`;
