@@ -105,7 +105,7 @@ describe("播报（outbox 出站）", () => {
 			expect(body).toContain("1. [单选] 用哪个方案？");
 			expect(body).toContain("2. [单选] 确认吗？");
 			expect(body).toContain("2.1 是");
-			expect(body).toContain("awr 1.1,2.1");
+			expect(body).toContain("awr 1,1");
 			expect(body).toContain("按题序逗号分隔，多选|，自定义=开头");
 			expect(body).not.toContain("多题暂不支持");
 		});
@@ -122,7 +122,7 @@ describe("播报（outbox 出站）", () => {
 					"  1.1 A  1.2 B",
 					"2. [多选] 启用哪些？",
 					"  2.1 x  2.2 y  2.3 z",
-					"回复 @bot catlain awr 1.1,2.1|2.2（按题序逗号分隔，多选|，自定义=开头）",
+					"回复 @bot catlain awr 1,1|2（按题序逗号分隔，多选|，自定义=开头）",
 				].join("\n"),
 			);
 		});

@@ -107,7 +107,8 @@ export function buildAskWaitingBody(
 			const labels = (q.options ?? []).map((o) => o.label);
 			if (labels.length > 0) {
 				lines.push(`  ${labels.map((l, i) => `${qi + 1}.${i + 1} ${l}`).join("  ")}`);
-				example.push(q.multiSelect && labels.length > 1 ? `${qi + 1}.1|${qi + 1}.2` : `${qi + 1}.1`);
+				// 示例用题内选项号（解析侧 answer-spec 只认题内号，不认 N.M）
+				example.push(q.multiSelect && labels.length > 1 ? `1|2` : `1`);
 			} else {
 				lines.push(`  ${qi + 1}.（无选项，自由输入）`);
 				example.push(`=文本`);
